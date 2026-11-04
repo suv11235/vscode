@@ -1,0 +1,391 @@
+{
+  "name": "prooftree",
+  "displayName": "Prooftree",
+  "description": "Claims, evidence and reviews for code written by agents and people.",
+  "version": "0.1.0",
+  "publisher": "prooftree",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other",
+    "AI"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": false,
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Checks run commands from the workspace's .prooftree/config.json."
+    }
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "prooftree",
+          "title": "Prooftree",
+          "icon": "$(shield)"
+        }
+      ]
+    },
+    "views": {
+      "prooftree": [
+        {
+          "id": "prooftree.claims",
+          "name": "Claims",
+          "icon": "$(shield)"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "prooftree.claims",
+        "contents": "Claims state what is true about the code, anchored to the lines that make it true. Evidence goes stale when those lines or a dependency change.\n[Declare Claim from Selection](command:prooftree.declareClaim)\n[Configure Checks](command:prooftree.openConfig)\n[Connect Agents](command:prooftree.installAgentHooks)",
+        "when": "!prooftree.hasClaims"
+      }
+    ],
+    "commands": [
+      {
+        "command": "prooftree.declareClaim",
+        "title": "Declare Claim from Selection",
+        "category": "Prooftree",
+        "icon": "$(add)"
+      },
+      {
+        "command": "prooftree.runCheck",
+        "title": "Run Check",
+        "category": "Prooftree",
+        "icon": "$(play)"
+      },
+      {
+        "command": "prooftree.approve",
+        "title": "Approve",
+        "category": "Prooftree",
+        "icon": "$(verified)"
+      },
+      {
+        "command": "prooftree.reject",
+        "title": "Reject",
+        "category": "Prooftree",
+        "icon": "$(thumbsdown)"
+      },
+      {
+        "command": "prooftree.reanchor",
+        "title": "Re-anchor at Current Code",
+        "category": "Prooftree",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "prooftree.retract",
+        "title": "Retract",
+        "category": "Prooftree",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "prooftree.revealClaim",
+        "title": "Show Claim",
+        "category": "Prooftree"
+      },
+      {
+        "command": "prooftree.openConfig",
+        "title": "Open Config",
+        "category": "Prooftree",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "prooftree.openLedger",
+        "title": "Open Ledger",
+        "category": "Prooftree",
+        "icon": "$(book)"
+      },
+      {
+        "command": "prooftree.installAgentHooks",
+        "title": "Connect Agents (Hooks and MCP)",
+        "category": "Prooftree",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "prooftree.refresh",
+        "title": "Refresh",
+        "category": "Prooftree",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "prooftree.revealClaim",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "prooftree.declareClaim",
+          "when": "view == prooftree.claims",
+          "group": "navigation@1"
+        },
+        {
+          "command": "prooftree.refresh",
+          "when": "view == prooftree.claims",
+          "group": "navigation@2"
+        },
+        {
+          "command": "prooftree.openConfig",
+          "when": "view == prooftree.claims",
+          "group": "1_config@1"
+        },
+        {
+          "command": "prooftree.openLedger",
+          "when": "view == prooftree.claims",
+          "group": "1_config@2"
+        },
+        {
+          "command": "prooftree.installAgentHooks",
+          "when": "view == prooftree.claims",
+          "group": "1_config@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "prooftree.runCheck",
+          "when": "view == prooftree.claims && viewItem == prooftree.claim",
+          "group": "inline@1"
+        },
+        {
+          "command": "prooftree.approve",
+          "when": "view == prooftree.claims && viewItem == prooftree.claim",
+          "group": "inline@2"
+        },
+        {
+          "command": "prooftree.reanchor",
+          "when": "view == prooftree.claims && viewItem == prooftree.claim",
+          "group": "1_claim@1"
+        },
+        {
+          "command": "prooftree.reject",
+          "when": "view == prooftree.claims && viewItem == prooftree.claim",
+          "group": "1_claim@2"
+        },
+        {
+          "command": "prooftree.retract",
+          "when": "view == prooftree.claims && viewItem == prooftree.claim",
+          "group": "2_danger@1"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "prooftree.declareClaim",
+          "when": "editorHasSelection && resourceScheme == file",
+          "group": "prooftree@1"
+        }
+      ]
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": ".prooftree/config.json",
+        "url": "./schemas/config.schema.json"
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "prooftree_declare_claim",
+        "toolReferenceName": "declareClaim",
+        "displayName": "Declare Claim",
+        "icon": "$(shield)",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Declare Claim in the Prooftree ledger",
+        "modelDescription": "Declare a claim: one specific statement that is now true about the code (behavior, invariant or requirement), anchored to the lines that make it true. Returns the claim id and status. Declare a claim for each behavior you change, then discharge it with prooftree_run_check.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "statement": {
+              "type": "string",
+              "description": "A checkable statement, e.g. \"parseDate rejects months above 12\"."
+            },
+            "anchors": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Where the claim is made true. Line numbers are 1-based and inclusive; omit them to anchor the whole file.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "description": "Workspace-relative or absolute path."
+                  },
+                  "startLine": {
+                    "type": "number"
+                  },
+                  "endLine": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "file"
+                ]
+              }
+            },
+            "dependsOn": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Ids of existing claims this claim relies on. Their changes make this claim's evidence stale."
+            }
+          },
+          "required": [
+            "statement",
+            "anchors"
+          ]
+        }
+      },
+      {
+        "name": "prooftree_update_claim",
+        "toolReferenceName": "updateClaim",
+        "displayName": "Update Claim",
+        "icon": "$(shield)",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Update Claim in the Prooftree ledger",
+        "modelDescription": "Write a new revision of a claim after its code changed or its statement needs correcting. Without anchors, re-anchors to the current text at the existing locations. Earlier evidence does not carry over; run a check afterwards.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "claim": {
+              "type": "string",
+              "description": "Claim id."
+            },
+            "statement": {
+              "type": "string"
+            },
+            "anchors": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Where the claim is made true. Line numbers are 1-based and inclusive; omit them to anchor the whole file.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "description": "Workspace-relative or absolute path."
+                  },
+                  "startLine": {
+                    "type": "number"
+                  },
+                  "endLine": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "file"
+                ]
+              }
+            },
+            "dependsOn": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Ids of existing claims this claim relies on. Their changes make this claim's evidence stale."
+            }
+          },
+          "required": [
+            "claim"
+          ]
+        }
+      },
+      {
+        "name": "prooftree_run_check",
+        "toolReferenceName": "runCheck",
+        "displayName": "Run Check",
+        "icon": "$(shield)",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Run Check in the Prooftree ledger",
+        "modelDescription": "Run one of the workspace's configured checks (from .prooftree/config.json) and record the result as evidence for a claim, bound to the current code. Only a passing check discharges a claim.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "claim": {
+              "type": "string",
+              "description": "Claim id."
+            },
+            "check": {
+              "type": "string",
+              "description": "Name of a configured check."
+            }
+          },
+          "required": [
+            "claim",
+            "check"
+          ]
+        }
+      },
+      {
+        "name": "prooftree_assert",
+        "toolReferenceName": "assert",
+        "displayName": "Assert Claim",
+        "icon": "$(shield)",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Assert Claim in the Prooftree ledger",
+        "modelDescription": "Record your reasoning that a claim holds without a machine check. Shown to reviewers as \"asserted only\"; it does not discharge the claim unless the workspace accepts assertions.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "claim": {
+              "type": "string",
+              "description": "Claim id."
+            },
+            "note": {
+              "type": "string",
+              "description": "Why the claim holds."
+            }
+          },
+          "required": [
+            "claim",
+            "note"
+          ]
+        }
+      },
+      {
+        "name": "prooftree_list_obligations",
+        "toolReferenceName": "listObligations",
+        "displayName": "List Obligations",
+        "icon": "$(shield)",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "List Obligations in the Prooftree ledger",
+        "modelDescription": "List claims that are not yet discharged (stale, failed, changed, blocked or without a check), each with the next step and the configured checks.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "prooftree_status",
+        "toolReferenceName": "status",
+        "displayName": "Claim Status",
+        "icon": "$(shield)",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Claim Status in the Prooftree ledger",
+        "modelDescription": "Show every open claim, or one claim, with its anchors, dependencies, machine result and human review.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "claim": {
+              "type": "string",
+              "description": "Optional claim id."
+            }
+          }
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "gulp compile-extension:prooftree",
+    "watch": "gulp watch-extension:prooftree",
+    "test": "node --test \"out/test/**/*.test.js\""
+  }
+}
