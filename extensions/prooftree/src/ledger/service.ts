@@ -9,7 +9,7 @@ import { createAnchor } from './anchors';
 import { runCommand } from './checks';
 import { CheckConfig, parseConfig, ProoftreeConfig } from './config';
 import { changedLines, createEditSpan, EditReport, evaluateEdits } from './edits';
-import { hashCheckInputs } from './inputs';
+import { globToRegExp, hashCheckInputs } from './inputs';
 import { locateDeclaration, runLeanCheck } from './lean';
 import { CONFIG_FILE, LEDGER_DIR, LEDGER_FILE, LedgerState, newId, readLedger, serializeRecord } from './ledger';
 import { Actor, Anchor, ClaimRecord, EditRecord, EditSpan, EvidenceRecord, FormalLink, LedgerRecord, RetractRecord, ReviewRecord } from './model';
@@ -262,7 +262,8 @@ export class ProoftreeService {
 
 	/** Agent-written lines, where they are now and what evidence covers them. */
 	edits(state = this.state(), reports = this.evaluate(state)): EditReport[] {
-		return evaluateEdits(state.edits, file => this.readFile(file), reports.values());
+		const { checks } = this.config();
+		return evaluateEdits(state.edits, file => this.readFile(file), reports.values(), (check, file) => readsFile(checks[check], file));
 	}
 
 	/**
@@ -338,20 +339,42 @@ export class ProoftreeService {
 		return reviews;
 	}
 
-	/** Claims the stop gate holds an agent to, in ledger order. */
+	/** Fingerprints of the claims that are not discharged, by claim id. */
+	openFingerprints(reports = this.evaluate()): Record<string, string> {
+		const { accept } = this.config().gate;
+		return Object.fromEntries([...reports.values()].filter(report => !accept.includes(report.status)).map(report => [report.claim.id, report.fingerprint]));
+	}
+
+	/**
+	 * Claims an agent session answers for, given `openFingerprints` from when it started:
+	 * claims that are open now and were not then, and open claims whose code, statement,
+	 * premises or steps changed since. Claims left open by earlier work stay with that work.
+	 */
+	sessionObligations(openAtStart: Readonly<Record<string, string>>, reports = this.evaluate()): ClaimReport[] {
+		const { accept } = this.config().gate;
+		return [...reports.values()].filter(report => !accept.includes(report.status) && openAtStart[report.claim.id] !== report.fingerprint);
+	}
+
+	/** Claims the stop gate holds an agent to when there is no session to scope it to, in ledger order. */
 	obligations(reports = this.evaluate(), scope = this.config().gate.scope): ClaimReport[] {
 		const { accept } = this.config().gate;
 		return [...reports.values()].filter(report =>
 			(scope === 'all' || report.claim.by.kind === 'agent') && !accept.includes(report.status));
 	}
 
-	/** Claims anchored in any of `files`, and every claim whose status depends on them. */
+	/**
+	 * Claims anchored in any of `files` or checked by a check that reads one of them, and every
+	 * claim whose status depends on those.
+	 */
 	claimsTouching(files: readonly string[], reports = this.evaluate()): ClaimReport[] {
 		const state = this.state();
-		const wanted = new Set(files.map(file => this.relativePath(file)));
+		const { checks } = this.config();
+		const wanted = [...new Set(files.map(file => this.relativePath(file)))];
+		const readsWanted = (check: string | undefined) => !!check && wanted.some(file => readsFile(checks[check], file));
 		const ids = new Set<string>();
 		for (const report of reports.values()) {
-			if (report.claim.anchors.some(anchor => wanted.has(anchor.file))) {
+			const checked = (state.evidence.get(report.claim.id) ?? []).map(record => record.check);
+			if (report.claim.anchors.some(anchor => wanted.includes(anchor.file)) || checked.some(readsWanted)) {
 				ids.add(report.claim.id);
 				dependentsOf(state, report.claim.id).forEach(id => ids.add(id));
 			}
@@ -458,6 +481,10 @@ export function findWorkspaceRoot(start: string): string {
 			return gitRoot ?? path.resolve(start);
 		}
 	}
+}
+
+function readsFile(check: CheckConfig | undefined, file: string): boolean {
+	return (check?.inputs ?? []).some(glob => globToRegExp(glob).test(file));
 }
 
 function requireHuman(by: Actor, action: string): void {

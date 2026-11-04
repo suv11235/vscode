@@ -23,9 +23,11 @@ statement / step / review model.
   as well as VS Code chat. When a person keeps chat edits, the kept lines are recorded as
   *accepted*: keeping an edit is not reviewing it. **Keep as Reviewed** (or **Mark Agent
   Edit Reviewed** later) records that they also read them. Agent lines that no person
-  reviewed and no checked or approved claim covers are **unverified**: tinted in the
-  editor, listed in the Claims view and annotated in CI. Each line is hashed, so a review
-  or a check covers exactly the text it saw, and lines that change afterwards drop out.
+  reviewed and no claim's passing check or approval covers are **unverified**: tinted in the
+  editor, listed in the Claims view and annotated in CI. A check does not vouch for its own
+  input files: an agent's new tests stay unverified until a person reviews them. Each line
+  is hashed, so a review or a check covers exactly the text it saw, and lines that change
+  afterwards drop out.
 - Everything is appended to `.prooftree/ledger.jsonl`; people configure checks and the
   stop gate in `.prooftree/config.json`.
 
@@ -50,7 +52,7 @@ claim.
 | People in VS Code | Claims view (goals with numbered steps), CodeLens and status borders on code and Lean files, hover with +/- reasoning depth, status bar, knowledge graph tab, commands to declare, add steps, link Lean, check, approve/reject, re-anchor and retract. On agent code: **Keep as Reviewed** next to Keep, a tint and hover on unverified agent lines with **Mark reviewed** and **Declare a claim**, and an "Agent code without evidence" list |
 | VS Code chat agents | Language model tools `#declareClaim`, `#decompose`, `#updateClaim`, `#runCheck`, `#assert`, `#listObligations`, `#status`, `#outline`, `#graph` |
 | Claude Code and other MCP clients | `node out/cli/main.js mcp` exposes the same tools |
-| Any agent with hooks | `node out/cli/main.js hook`: `SessionStart` explains the contract; `PreToolUse` and `PostToolUse` record the lines each file-writing tool call changed (from a snapshot of the files before it ran) and report claims the edit affected, including goals above them; `Stop` blocks (exit 2) while the agent's claims are open |
+| Any agent with hooks | `node out/cli/main.js hook`: `SessionStart` explains the contract and notes which claims were already open; `PreToolUse` and `PostToolUse` record the lines each file-writing tool call changed (from a snapshot of the files before it ran) and report claims the edit affected, through their code or the files their checks read, including goals above them; `Stop` blocks (exit 2) while claims the session opened or changed are not discharged. Claims left open by earlier work don't hold up a new session unless it touches them (`"scope": "all"` holds every session to every open claim) |
 | CI | `node .prooftree/bin/prooftree.cjs ci --rerun` re-runs stale or failed checks, writes a job summary, annotates open claims on their lines, and fails the build. Unverified agent code is annotated as warnings, or fails the build with `"unverifiedAgentCode": "block"`. **Prooftree: Add CI Workflow** writes the GitHub workflow, the bundled CLI and a union merge rule for the ledger |
 | Terminal | `prooftree edits` lists unverified agent lines (`--all` for every agent line and what covers it); `prooftree review-edits <file[:start-end]>` records your review |
 

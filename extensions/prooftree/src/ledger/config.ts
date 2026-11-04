@@ -27,7 +27,11 @@ export interface ProoftreeConfig {
 	readonly gate: {
 		/** Keep agents working while their claims are not in an accepted status. */
 		readonly onStop: boolean;
-		/** Which claims the stop gate covers. */
+		/**
+		 * Which claims the stop gate holds an agent to. `agent`: claims its session opened or
+		 * changed (claims stated by agents, when hooks cannot tell sessions apart). `all`: every
+		 * open claim.
+		 */
 		readonly scope: 'agent' | 'all';
 		/** Statuses that discharge a claim, and that a dependency must have to not block. */
 		readonly accept: readonly ClaimStatus[];

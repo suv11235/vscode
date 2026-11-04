@@ -113,7 +113,7 @@ export function ciSummary(result: CiResult): string {
 	}
 	if (result.unverified.length) {
 		const effect = result.unverifiedAgentCode === 'block' ? 'They fail this build.' : 'They do not fail the build.';
-		lines.push('', `### Agent code without evidence`, '', `No person reviewed these agent-written lines and no checked or approved claim covers them. ${effect}`, '');
+		lines.push('', `### Agent code without evidence`, '', `No person reviewed these agent-written lines, and no claim about them has a passing check or a person's approval. ${effect}`, '');
 		lines.push('| Where | Written by | How |', '| --- | --- | --- |');
 		for (const edit of result.unverified) {
 			const date = edit.source.at.slice(0, 10);

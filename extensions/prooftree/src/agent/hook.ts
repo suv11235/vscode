@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { sha256 } from '../ledger/anchors';
-import { agentContract, describeObligations } from '../ledger/format';
+import { agentContract, describeObligations, STATUS_LABEL } from '../ledger/format';
 import { Actor } from '../ledger/model';
 import { ProoftreeService } from '../ledger/service';
 
@@ -31,42 +31,66 @@ const WRITE_TOOL = /edit|write|patch|create|replace|insert/i;
 /** Larger files are not snapshotted, so their lines are not recorded. */
 const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 const SNAPSHOT_TTL_MS = 60 * 60 * 1000;
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Workspace files as they were before a tool call (null: did not exist), by relative path. */
 type Snapshot = Record<string, string | null>;
 
+/** Fingerprints of the claims that were open when a session started, by claim id. */
+type Baseline = Record<string, string>;
+
 /**
- * Keeps files between an agent's PreToolUse and PostToolUse hooks, which run as separate
- * processes, so the lines the tool changed can be found by diffing.
+ * What hooks keep between events, which run as separate processes: files before a tool call,
+ * so the lines it changed can be found by diffing, and the claims open when a session
+ * started, so the session answers only for claims it affected.
  */
-export class SnapshotStore {
+export class HookState {
 
-	constructor(private readonly dir = path.join(os.tmpdir(), 'prooftree-hook-snapshots')) { }
+	constructor(private readonly dir = path.join(os.tmpdir(), 'prooftree-hooks')) { }
 
-	save(key: string, snapshot: Snapshot): void {
-		fs.mkdirSync(this.dir, { recursive: true });
-		this.prune();
-		fs.writeFileSync(path.join(this.dir, key + '.json'), JSON.stringify(snapshot));
+	saveSnapshot(key: string, snapshot: Snapshot): void {
+		this.write(`snapshot-${key}`, snapshot);
 	}
 
 	/** Returns and deletes the snapshot. */
-	take(key: string): Snapshot | undefined {
-		const file = path.join(this.dir, key + '.json');
+	takeSnapshot(key: string): Snapshot | undefined {
+		const snapshot = this.read<Snapshot>(`snapshot-${key}`);
+		fs.rmSync(path.join(this.dir, `snapshot-${key}.json`), { force: true });
+		return snapshot;
+	}
+
+	/** Keeps the first baseline of a session; it starts again on resume and after compaction. */
+	startSession(key: string, baseline: Baseline): void {
+		if (!this.sessionBaseline(key)) {
+			this.write(`session-${key}`, baseline);
+		}
+	}
+
+	sessionBaseline(key: string): Baseline | undefined {
+		return this.read<Baseline>(`session-${key}`);
+	}
+
+	private read<T>(name: string): T | undefined {
 		try {
-			const snapshot = JSON.parse(fs.readFileSync(file, 'utf8')) as Snapshot;
-			fs.rmSync(file, { force: true });
-			return snapshot;
+			return JSON.parse(fs.readFileSync(path.join(this.dir, name + '.json'), 'utf8')) as T;
 		} catch {
 			return undefined;
 		}
 	}
 
-	/** Drops snapshots of tool calls that never finished. */
+	private write(name: string, value: unknown): void {
+		fs.mkdirSync(this.dir, { recursive: true });
+		this.prune();
+		fs.writeFileSync(path.join(this.dir, name + '.json'), JSON.stringify(value));
+	}
+
+	/** Drops snapshots of tool calls that never finished, and old sessions. */
 	private prune(): void {
 		for (const name of fs.readdirSync(this.dir)) {
 			const file = path.join(this.dir, name);
 			try {
-				if (Date.now() - fs.statSync(file).mtimeMs > SNAPSHOT_TTL_MS) {
+				const ttl = name.startsWith('session-') ? SESSION_TTL_MS : SNAPSHOT_TTL_MS;
+				if (Date.now() - fs.statSync(file).mtimeMs > ttl) {
 					fs.rmSync(file, { force: true });
 				}
 			} catch {
@@ -79,7 +103,7 @@ export class SnapshotStore {
 export interface HookOptions {
 	/** The agent running the hook, when the hook command names it. */
 	readonly agent?: string;
-	readonly snapshots?: SnapshotStore;
+	readonly state?: HookState;
 }
 
 function additionalContext(hookEventName: string, text: string): HookResult {
@@ -124,6 +148,10 @@ function snapshotKey(event: Record<string, any>, service: ProoftreeService): str
 	return sha256(`${service.root}\0${event.session_id ?? ''}\0${call}`).slice(0, 32);
 }
 
+function sessionKey(event: Record<string, any>, service: ProoftreeService): string | undefined {
+	return event.session_id ? sha256(`${service.root}\0${event.session_id}`).slice(0, 32) : undefined;
+}
+
 /** Claude Code reports the file before an Edit or Write; used when there is no snapshot. */
 function originalFiles(event: Record<string, any>, service: ProoftreeService): Snapshot {
 	const response = event.tool_response;
@@ -149,8 +177,8 @@ function hookAgent(event: Record<string, any>, named: string | undefined): Actor
 }
 
 /** Records the lines a tool call changed, by diffing against the files before it ran. */
-function recordWrites(event: Record<string, any>, service: ProoftreeService, snapshots: SnapshotStore, agent: string | undefined): void {
-	const before = snapshots.take(snapshotKey(event, service)) ?? originalFiles(event, service);
+function recordWrites(event: Record<string, any>, service: ProoftreeService, state: HookState, agent: string | undefined): void {
+	const before = state.takeSnapshot(snapshotKey(event, service)) ?? originalFiles(event, service);
 	for (const [file, content] of Object.entries(before)) {
 		try {
 			service.recordAgentWrite({
@@ -165,13 +193,27 @@ function recordWrites(event: Record<string, any>, service: ProoftreeService, sna
 export function handleHook(event: Record<string, any>, service: ProoftreeService, options: HookOptions = {}): HookResult {
 	const name: string = event.hook_event_name ?? event.hookEventName ?? '';
 	const config = service.config();
-	const snapshots = options.snapshots ?? new SnapshotStore();
+	const state = options.state ?? new HookState();
 	const writes = WRITE_TOOL.test(event.tool_name ?? '') && service.exists();
+	const session = sessionKey(event, service);
+	const baseline = session ? state.sessionBaseline(session) : undefined;
 
 	switch (name) {
 		case 'SessionStart': {
-			const open = service.obligations();
-			return additionalContext(name, agentContract(config) + (open.length ? '\n\n' + describeObligations(open, config) : ''));
+			const reports = service.evaluate();
+			const start = baseline ?? service.openFingerprints(reports);
+			if (session && service.exists()) {
+				state.startSession(session, start);
+			}
+			const all = config.gate.scope === 'all';
+			const own = all ? service.obligations(reports, 'all') : service.sessionObligations(start, reports);
+			const earlier = all ? [] : service.obligations(reports, 'all').filter(report => start[report.claim.id] === report.fingerprint);
+			const listed = earlier.map(report => `- ${report.claim.id} [${STATUS_LABEL[report.status]}] ${report.claim.statement}`).join('\n');
+			return additionalContext(name, [
+				agentContract(config),
+				...(own.length ? [describeObligations(own, config)] : []),
+				...(earlier.length ? [`${earlier.length} claim${earlier.length === 1 ? ' was' : 's were'} already open from earlier work. You answer for one only if your changes affect it:\n${listed}`] : []),
+			].join('\n\n'));
 		}
 		case 'PreToolUse': {
 			const files = writes ? workspaceFiles(event, service) : [];
@@ -185,19 +227,20 @@ export function handleHook(event: Record<string, any>, service: ProoftreeService
 						snapshot[file] = fs.readFileSync(path.join(service.root, file), 'utf8');
 					}
 				}
-				snapshots.save(snapshotKey(event, service), snapshot);
+				state.saveSnapshot(snapshotKey(event, service), snapshot);
 			}
 			return ALLOW;
 		}
 		case 'PostToolUse': {
 			if (writes) {
-				recordWrites(event, service, snapshots, options.agent);
+				recordWrites(event, service, state, options.agent);
 			}
 			const files = workspaceFiles(event, service);
 			if (!files.length) {
 				return ALLOW;
 			}
-			const affected = service.claimsTouching(files).filter(report => !config.gate.accept.includes(report.status));
+			const affected = service.claimsTouching(files).filter(report => !config.gate.accept.includes(report.status)
+				&& (!baseline || baseline[report.claim.id] !== report.fingerprint));
 			return affected.length
 				? additionalContext(name, 'Prooftree: this edit affects claims.\n' + describeObligations(affected, config))
 				: ALLOW;
@@ -207,7 +250,8 @@ export function handleHook(event: Record<string, any>, service: ProoftreeService
 			if (!config.gate.onStop) {
 				return ALLOW;
 			}
-			const open = service.obligations();
+			// With a baseline, the session answers for the claims it opened or changed, not for earlier work.
+			const open = baseline && config.gate.scope !== 'all' ? service.sessionObligations(baseline) : service.obligations();
 			if (!open.length) {
 				return ALLOW;
 			}

@@ -738,7 +738,7 @@
     "colors": [
       {
         "id": "prooftree.unverifiedAgentCodeBackground",
-        "description": "Background of agent-written lines that no person reviewed and no checked or approved claim covers.",
+        "description": "Background of agent-written lines that no person reviewed and no claim's passing check or approval covers.",
         "defaults": {
           "dark": "#a371f714",
           "light": "#8250df0f",

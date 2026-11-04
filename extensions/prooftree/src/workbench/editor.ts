@@ -136,7 +136,7 @@ export class EditHoverProvider implements vscode.HoverProvider {
 /**
  * A tint and overview ruler mark on agent-written lines that only the agent vouches for,
  * whether an agent wrote them from a terminal or a person kept them in the editor. Lines a
- * person reviewed, or that a checked or approved claim covers, are left plain.
+ * person reviewed, or that a claim's passing check or approval covers, are left plain.
  */
 export class EditDecorations implements vscode.Disposable {
 

@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { test } from 'node:test';
-import { handleHook, SnapshotStore } from '../agent/hook';
+import { handleHook, HookState } from '../agent/hook';
 import { ciSummary, githubAnnotations, runCi } from '../ledger/ci';
 import { changedLines, createEditSpan, describeEdit, EditReport, lineHash, locateSpan } from '../ledger/edits';
 import { Actor } from '../ledger/model';
@@ -153,8 +153,8 @@ test('ci warns about unverified agent code by default and can block on it', asyn
 	assert.deepStrictEqual(githubAnnotations(await runCi(allow, { rerun: false }), allow), []);
 });
 
-function snapshotStore(dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prooftree-snapshots-'))): SnapshotStore {
-	return new SnapshotStore(dir);
+function hookState(dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prooftree-hooks-'))): HookState {
+	return new HookState(dir);
 }
 
 test('changed lines are what a diff adds, without runs of blank lines', () => {
@@ -169,11 +169,11 @@ test('changed lines are what a diff adds, without runs of blank lines', () => {
 
 test('agent hooks record the lines an agent writes from a terminal', async () => {
 	const service = workspace();
-	const snapshots = snapshotStore();
+	const state = hookState();
 	const call = { session_id: 's1', tool_use_id: 't1', tool_name: 'Edit', permission_mode: 'default', tool_input: { file_path: path.join(service.root, 'cart.js') } };
-	assert.strictEqual(handleHook({ ...call, hook_event_name: 'PreToolUse' }, service, { snapshots }).exitCode, 0);
+	assert.strictEqual(handleHook({ ...call, hook_event_name: 'PreToolUse' }, service, { state }).exitCode, 0);
 	edit(service, lines => lines.splice(6, 0, '\tif (total >= 25) return 2;'));
-	handleHook({ ...call, hook_event_name: 'PostToolUse' }, service, { snapshots });
+	handleHook({ ...call, hook_event_name: 'PostToolUse' }, service, { state });
 
 	const [written] = service.edits();
 	assert.deepStrictEqual(summarize(service.edits()), ['7-7 unverified']);
@@ -194,39 +194,39 @@ test('without a snapshot, the file Claude Code reports from before the edit is u
 	handleHook({
 		hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_use_id: 't2', tool_input: { file_path: file },
 		tool_response: { filePath: file, originalFile: CART },
-	}, service, { snapshots: snapshotStore(), agent: 'codex' });
+	}, service, { state: hookState(), agent: 'codex' });
 	assert.deepStrictEqual(summarize(service.edits()), ['14-14 unverified']);
 	assert.strictEqual(service.edits()[0].source.by.name, 'codex');
 });
 
 test('VS Code agents are recognized, and new files count in full', () => {
 	const service = workspace();
-	const snapshots = snapshotStore();
+	const state = hookState();
 	const call = { timestamp: new Date().toISOString(), tool_use_id: 't3', tool_name: 'create_file', tool_input: { filePath: path.join(service.root, 'fees.js') } };
-	handleHook({ ...call, hook_event_name: 'PreToolUse' }, service, { snapshots });
+	handleHook({ ...call, hook_event_name: 'PreToolUse' }, service, { state });
 	fs.writeFileSync(path.join(service.root, 'fees.js'), 'export const FEE = 2;\n\nexport function fee() {\n\treturn FEE;\n}\n');
-	handleHook({ ...call, hook_event_name: 'PostToolUse' }, service, { snapshots });
+	handleHook({ ...call, hook_event_name: 'PostToolUse' }, service, { state });
 	assert.deepStrictEqual(summarize(service.edits()), ['1-5 unverified']);
 	assert.strictEqual(service.edits()[0].source.by.name, 'VS Code agent');
 });
 
 test('reads, and workspaces without Prooftree, are not recorded', () => {
 	const service = workspace();
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prooftree-snapshots-'));
-	const snapshots = snapshotStore(dir);
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prooftree-hooks-'));
+	const state = hookState(dir);
 	const read = { tool_use_id: 't4', tool_name: 'Read', tool_input: { file_path: path.join(service.root, 'cart.js') } };
-	handleHook({ ...read, hook_event_name: 'PreToolUse' }, service, { snapshots });
+	handleHook({ ...read, hook_event_name: 'PreToolUse' }, service, { state });
 	assert.deepStrictEqual(fs.readdirSync(dir), []);
-	handleHook({ ...read, hook_event_name: 'PostToolUse' }, service, { snapshots });
+	handleHook({ ...read, hook_event_name: 'PostToolUse' }, service, { state });
 	assert.deepStrictEqual(service.edits(), []);
 
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'prooftree-none-'));
 	fs.writeFileSync(path.join(root, 'cart.js'), CART);
 	const plain = new ProoftreeService(root);
 	const call = { tool_use_id: 't5', tool_name: 'Write', tool_input: { file_path: path.join(root, 'cart.js') } };
-	handleHook({ ...call, hook_event_name: 'PreToolUse' }, plain, { snapshots });
+	handleHook({ ...call, hook_event_name: 'PreToolUse' }, plain, { state });
 	fs.writeFileSync(path.join(root, 'cart.js'), CART + '\n// more');
-	handleHook({ ...call, hook_event_name: 'PostToolUse' }, plain, { snapshots });
+	handleHook({ ...call, hook_event_name: 'PostToolUse' }, plain, { state });
 	assert.strictEqual(fs.existsSync(path.join(root, '.prooftree')), false);
 
 	assert.throws(() => service.recordAgentWrite({ file: 'cart.js', before: '' }, person), /Only agents/);
@@ -252,4 +252,21 @@ test('a checked or approved claim covers the agent lines in its code until they 
 	const approved = service.declareClaim({ statement: 'The shipping function is unchanged', anchors: [{ file: 'cart.js', startLine: 5, endLine: 8 }] }, agent);
 	service.review(approved.claim.id, 'approved', undefined, person);
 	assert.deepStrictEqual(summarize(service.edits()), ['5-6 covered', '8-8 covered']);
+});
+
+test('a claim\'s own passing check covers its code while a premise is open, but not the tests the check runs', async () => {
+	const service = workspace({}, { pass: 'true', fail: 'false', unit: { command: 'true', inputs: ['cart.test.js'] } });
+	fs.writeFileSync(path.join(service.root, 'cart.test.js'), 'assert(total([]) === 5);\n');
+	service.recordAgentWrite({ file: 'cart.js', before: CART.split('\n').slice(0, 9).join('\n') }, agent);
+	service.recordAgentWrite({ file: 'cart.test.js', before: '' }, agent);
+	const premise = service.declareClaim({ statement: 'subtotal sums price times quantity', anchors: [{ file: 'cart.js', startLine: 1, endLine: 3 }] }, agent).claim.id;
+	await service.runCheck(premise, 'fail', agent);
+	const { claim } = service.declareClaim({
+		statement: 'total adds shipping to the subtotal',
+		anchors: [{ file: 'cart.js', startLine: 10, endLine: 13 }, { file: 'cart.test.js', startLine: 1, endLine: 1 }],
+		dependsOn: [premise],
+	}, agent);
+	const report = await service.runCheck(claim.id, 'unit', agent);
+	assert.strictEqual(report.report.status, 'blocked');
+	assert.deepStrictEqual(service.edits().map(edit => `${edit.file}:${edit.startLine}-${edit.endLine} ${edit.status}`), ['cart.js:10-13 covered', 'cart.test.js:1-1 unverified']);
 });

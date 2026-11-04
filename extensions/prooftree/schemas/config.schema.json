@@ -49,7 +49,7 @@
 				"scope": {
 					"enum": ["agent", "all"],
 					"default": "agent",
-					"description": "Whether the stop gate covers only claims stated by agents, or all claims."
+					"description": "Which claims the stop gate holds an agent to: \"agent\", the claims its session opened or changed (with hooks that cannot tell sessions apart, claims stated by agents); \"all\", every open claim."
 				},
 				"accept": {
 					"type": "array",
@@ -60,7 +60,7 @@
 				"unverifiedAgentCode": {
 					"enum": ["allow", "warn", "block"],
 					"default": "warn",
-					"description": "What `prooftree ci` does about agent-written lines that no person reviewed and no checked or approved claim covers: ignore them, annotate them as warnings, or fail the build."
+					"description": "What `prooftree ci` does about agent-written lines that no person reviewed and no claim's passing check or approval covers: ignore them, annotate them as warnings, or fail the build."
 				}
 			}
 		}

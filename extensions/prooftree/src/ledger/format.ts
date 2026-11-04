@@ -31,9 +31,13 @@ export function describeAnchor(anchor: AnchorState): string {
 export function nextStep(report: ClaimReport, config: ProoftreeConfig): string {
 	// A Lean check only applies to a claim linked to a Lean declaration.
 	const checks = Object.entries(config.checks).filter(([, check]) => check.kind !== 'lean' || report.claim.formal).map(([name]) => name);
-	const runCheck = checks.length
-		? `run a check (${checks.join(', ')})`
-		: 'ask a person to add a check to .prooftree/config.json or review it';
+	// The check that discharged a claim before is the one to re-run; another check may test something else.
+	const previous = report.lastCheck?.check;
+	const runCheck = previous && checks.includes(previous)
+		? `re-run check "${previous}", whose earlier ${report.lastCheck!.result === 'pass' ? 'pass' : 'failure'} no longer counts`
+		: checks.length
+			? `run a check (${checks.join(', ')})`
+			: 'ask a person to add a check to .prooftree/config.json or review it';
 	switch (report.status) {
 		case 'drifted':
 			return 'the anchored code changed: confirm the claim still holds, re-anchor it with update claim, then ' + runCheck;
@@ -133,8 +137,8 @@ export function agentContract(config: ProoftreeConfig): string {
 		`Discharge each claim by running a configured check${checks.length ? `: ${checks.join('; ')}` : ' (none configured yet)'}. Assertions do not count.`,
 		'Where a Lean statement of the property exists, link it (formal: file and declaration) and run the lean check; a proof that uses sorry fails.',
 		'Editing anchored code, a premise, a step or a check\'s inputs makes evidence stale.',
-		'Lines you write are recorded. People see them as unverified agent code until a claim about them passes a check or a person reviews them.',
-		config.gate.onStop ? `You cannot finish while your claims are not ${config.gate.accept.join(', ')}.` : '',
+		'Lines you write are recorded. People see them as unverified agent code until a person reviews them or a claim about them passes a check; a check does not vouch for the tests it runs.',
+		config.gate.onStop ? `You cannot finish while ${config.gate.scope === 'all' ? 'any claim' : 'a claim you stated or affected'} is not ${config.gate.accept.join(', ')}.` : '',
 		'Use the prooftree tools; never edit the ledger file directly.',
 	].filter(Boolean).join(' ');
 }

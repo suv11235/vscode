@@ -5,7 +5,7 @@
 
 import { sha256, splitLines } from './anchors';
 import { EditRecord, EditSpan } from './model';
-import { ClaimReport, ClaimStatus, ReadFile } from './status';
+import { ClaimReport, ReadFile } from './status';
 
 /**
  * Where agent-written lines are now, and what evidence covers them. Spans are followed line
@@ -16,8 +16,10 @@ import { ClaimReport, ClaimStatus, ReadFile } from './status';
 
 /**
  * - `reviewed`: a person reviewed these exact lines.
- * - `covered`: nobody reviewed the lines, but they are in the code of a claim that is
- *   checked or approved as the code is now.
+ * - `covered`: nobody reviewed the lines, but they are in the code of a claim with evidence
+ *   of its own for the code as it is now: a person approved it, or its check passes. A check
+ *   does not cover its own input files, such as the tests it runs: passing shows the code and
+ *   the tests agree, not that the tests are right.
  * - `unverified`: only the agent vouches for them.
  */
 export type EditStatus = 'unverified' | 'covered' | 'reviewed';
@@ -35,9 +37,6 @@ export interface EditReport {
 	/** Claims with current evidence whose code includes these lines. */
 	readonly claims: readonly string[];
 }
-
-/** Claim statuses whose own evidence vouches for the anchored code: a passing check or a person's approval. */
-const EVIDENCE: readonly ClaimStatus[] = ['checked', 'reviewed'];
 
 /** How far from its recorded place a partly changed span is looked for. */
 const SEARCH_WINDOW = 200;
@@ -177,15 +176,23 @@ export function changedLines(before: string, after: string): { startLine: number
 	return runs;
 }
 
-/** Lines of each file that claims with current evidence are about. Whole-file anchors cover every line. */
-function coverage(claims: Iterable<ClaimReport>): Map<string, { startLine: number; endLine: number; claim: string }[]> {
+/** Whether a check reads a file, so its results say nothing about that file. */
+export type CheckReads = (check: string, file: string) => boolean;
+
+/**
+ * Lines of each file that claims with current evidence of their own are about, whatever
+ * their premises and steps. Whole-file anchors cover every line.
+ */
+function coverage(claims: Iterable<ClaimReport>, checkReads: CheckReads): Map<string, { startLine: number; endLine: number; claim: string }[]> {
 	const byFile = new Map<string, { startLine: number; endLine: number; claim: string }[]>();
 	for (const report of claims) {
-		if (!EVIDENCE.includes(report.status)) {
+		const approved = report.review === 'approved' && report.machine !== 'fail';
+		const passed = report.machine === 'pass' && report.review !== 'rejected';
+		if (!approved && !passed) {
 			continue;
 		}
 		for (const anchor of report.anchors) {
-			if (anchor.kind === 'intact' || anchor.kind === 'moved') {
+			if ((anchor.kind === 'intact' || anchor.kind === 'moved') && (approved || !checkReads(report.check!.check!, anchor.anchor.file))) {
 				const range = { startLine: anchor.startLine ?? 1, endLine: anchor.endLine ?? Number.MAX_SAFE_INTEGER, claim: report.claim.id };
 				byFile.set(anchor.anchor.file, [...(byFile.get(anchor.anchor.file) ?? []), range]);
 			}
@@ -198,14 +205,14 @@ function coverage(claims: Iterable<ClaimReport>): Map<string, { startLine: numbe
  * Agent-written lines in each file, grouped into runs with the same source, review and
  * covering claims. `claims` are the evaluated claims, whose evidence can cover the lines.
  */
-export function evaluateEdits(records: readonly EditRecord[], readFile: ReadFile, claims: Iterable<ClaimReport> = []): EditReport[] {
+export function evaluateEdits(records: readonly EditRecord[], readFile: ReadFile, claims: Iterable<ClaimReport> = [], checkReads: CheckReads = () => false): EditReport[] {
 	const byFile = new Map<string, { record: EditRecord; span: EditSpan }[]>();
 	for (const record of records) {
 		for (const span of record.spans) {
 			byFile.set(span.file, [...(byFile.get(span.file) ?? []), { record, span }]);
 		}
 	}
-	const covered = coverage(claims);
+	const covered = coverage(claims, checkReads);
 
 	const reports: EditReport[] = [];
 	for (const [file, entries] of byFile) {

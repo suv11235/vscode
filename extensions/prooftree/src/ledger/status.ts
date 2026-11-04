@@ -37,6 +37,8 @@ export interface ClaimReport {
 	readonly blockedBy: readonly string[];
 	readonly status: ClaimStatus;
 	readonly check?: EvidenceRecord;
+	/** The latest check run for the claim, whether or not it still counts. */
+	readonly lastCheck?: EvidenceRecord;
 	readonly reviewRecord?: ReviewRecord;
 }
 
@@ -143,7 +145,7 @@ export function evaluateLedger(state: LedgerState, readFile: ReadFile, options: 
 
 		const report: ClaimReport = {
 			claim, fingerprint, anchors, steps: steps.map(step => step.id),
-			machine, review, asserted, blockedBy, status, check, reviewRecord,
+			machine, review, asserted, blockedBy, status, check, reviewRecord, lastCheck: latest(checks),
 		};
 		reports.set(id, report);
 		return report;

@@ -108,7 +108,7 @@ export class ClaimsView implements vscode.TreeDataProvider<ClaimsNode>, vscode.D
 				const count = this.model.unverifiedEdits.length;
 				const item = new vscode.TreeItem('Agent code without evidence', vscode.TreeItemCollapsibleState.Expanded);
 				item.description = `${count} edit${count === 1 ? '' : 's'}`;
-				item.tooltip = 'Agent-written lines that no person reviewed and no checked or approved claim covers. Keeping an edit is not reviewing it.';
+				item.tooltip = 'Agent-written lines that no person reviewed and no claim\'s passing check or approval covers. A check does not vouch for the tests it runs, and keeping an edit is not reviewing it.';
 				item.iconPath = new vscode.ThemeIcon('eye-closed', new vscode.ThemeColor('prooftree.unverifiedAgentCodeOverviewRuler'));
 				return item;
 			}

@@ -9,7 +9,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { PassThrough } from 'stream';
 import { test } from 'node:test';
-import { editedFiles, handleHook } from '../agent/hook';
+import { editedFiles, handleHook, HookState } from '../agent/hook';
 import { serveMcp } from '../agent/mcp';
 import { AGENT_TOOLS } from '../agent/tools';
 import { createAnchor, resolveAnchor } from '../ledger/anchors';
@@ -132,6 +132,45 @@ test('the stop hook blocks once, then warns', async () => {
 
 	await service.runCheck(id, 'pass', agent);
 	assert.strictEqual(handleHook({ hookEventName: 'Stop' }, service).exitCode, 0);
+});
+
+test('a session answers only for the claims it opened or changed', async () => {
+	const service = workspace({ checks: { pass: 'node -e "process.exit(0)"', fail: 'node -e "process.exit(3)"', unit: { command: 'node -e "process.exit(0)"', inputs: ['date.test.ts'] } } });
+	fs.writeFileSync(path.join(service.root, 'date.test.ts'), '// tests');
+	const state = new HookState(fs.mkdtempSync(path.join(os.tmpdir(), 'prooftree-hooks-')));
+	const earlier = service.declareClaim({ statement: 'parseYear rejects letters', anchors: [{ file: 'date.ts', startLine: 9, endLine: 11 }] }, agent).claim.id;
+	await service.runCheck(earlier, 'fail', agent);
+	const month = service.declareClaim({ statement: 'parseMonth rejects 13', anchors: [{ file: 'date.ts', startLine: 3, endLine: 5 }] }, agent).claim.id;
+	await service.runCheck(month, 'unit', agent);
+
+	const hook = (event: object) => handleHook({ session_id: 's1', ...event }, service, { state });
+	const context = JSON.parse(hook({ hook_event_name: 'SessionStart' }).stdout!).hookSpecificOutput.additionalContext;
+	assert.match(context, new RegExp(`1 claim was already open from earlier work[\\s\\S]*\\n- ${earlier} \\[failed\\]`));
+	assert.strictEqual(hook({ hook_event_name: 'Stop' }).exitCode, 0);
+
+	// Editing the test file a check reads makes the month claim stale: the session broke it, so it answers for it.
+	fs.writeFileSync(path.join(service.root, 'date.test.ts'), '// more tests');
+	const posted = JSON.parse(hook({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: path.join(service.root, 'date.test.ts') } }).stdout!).hookSpecificOutput.additionalContext;
+	assert.match(posted, new RegExp(month));
+	const blocked = hook({ hook_event_name: 'Stop' });
+	assert.strictEqual(blocked.exitCode, 2);
+	assert.match(blocked.stderr!, new RegExp(month));
+	assert.doesNotMatch(blocked.stderr!, new RegExp(earlier));
+	// It is told which check passed before, so it does not guess another one.
+	assert.match(blocked.stderr!, /next: re-run check "unit", whose earlier pass no longer counts/);
+
+	// Compaction starts the session again without forgetting what was open when it began.
+	hook({ hook_event_name: 'SessionStart', source: 'compact' });
+	assert.strictEqual(hook({ hook_event_name: 'Stop' }).exitCode, 2);
+
+	await service.runCheck(month, 'unit', agent);
+	const stated = service.declareClaim({ statement: 'parseMonth returns a number', anchors: [{ file: 'date.ts', startLine: 6, endLine: 6 }] }, agent).claim.id;
+	assert.match(hook({ hook_event_name: 'Stop' }).stderr!, new RegExp(stated));
+	await service.runCheck(stated, 'pass', agent);
+	assert.strictEqual(hook({ hook_event_name: 'Stop' }).exitCode, 0);
+
+	// Without a session to scope to, every open agent claim counts.
+	assert.strictEqual(handleHook({ hook_event_name: 'Stop' }, service, { state }).exitCode, 2);
 });
 
 test('the post-edit hook reports affected claims', async () => {
