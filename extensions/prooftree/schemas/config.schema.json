@@ -57,10 +57,10 @@
 					"default": ["checked", "reviewed", "proved"],
 					"description": "Statuses that discharge a claim. \"proved\" is a goal whose steps are all discharged."
 				},
-				"unreviewedEdits": {
+				"unverifiedAgentCode": {
 					"enum": ["allow", "warn", "block"],
 					"default": "warn",
-					"description": "What `prooftree ci` does about agent-written lines a person kept without reviewing: ignore them, annotate them as warnings, or fail the build."
+					"description": "What `prooftree ci` does about agent-written lines that no person reviewed and no checked or approved claim covers: ignore them, annotate them as warnings, or fail the build."
 				}
 			}
 		}

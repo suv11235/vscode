@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { describeEdit, EditReport } from './edits';
+import { describeEdit, EditReport, editLines, writerOf } from './edits';
 import { describeAnchor, nextStep, STATUS_LABEL } from './format';
 import { Actor } from './model';
 import { ProoftreeService } from './service';
@@ -28,9 +28,9 @@ export interface CiResult {
 	readonly reports: readonly ClaimReport[];
 	readonly open: readonly ClaimReport[];
 	readonly reran: readonly CiRun[];
-	/** Agent-written lines kept without review; empty when the gate allows them. */
-	readonly unreviewed: readonly EditReport[];
-	readonly unreviewedEdits: 'allow' | 'warn' | 'block';
+	/** Agent-written lines no review or passing check covers; empty when the gate allows them. */
+	readonly unverified: readonly EditReport[];
+	readonly unverifiedAgentCode: 'allow' | 'warn' | 'block';
 }
 
 const CI: Actor = { kind: 'ci', name: process.env.GITHUB_ACTIONS ? 'github-actions' : 'ci' };
@@ -52,10 +52,10 @@ export async function runCi(service: ProoftreeService, options: CiOptions): Prom
 	}
 	const reports = [...service.evaluate().values()];
 	const open = service.obligations(new Map(reports.map(report => [report.claim.id, report])), scope);
-	const { unreviewedEdits } = service.config().gate;
-	const unreviewed = unreviewedEdits === 'allow' ? [] : service.edits().filter(edit => edit.status === 'unreviewed');
-	const ok = open.length === 0 && !(unreviewedEdits === 'block' && unreviewed.length);
-	return { ok, reports, open, reran, unreviewed, unreviewedEdits };
+	const { unverifiedAgentCode } = service.config().gate;
+	const unverified = unverifiedAgentCode === 'allow' ? [] : service.edits().filter(edit => edit.status === 'unverified');
+	const ok = open.length === 0 && !(unverifiedAgentCode === 'block' && unverified.length);
+	return { ok, reports, open, reran, unverified, unverifiedAgentCode };
 }
 
 function escapeData(text: string): string {
@@ -66,12 +66,12 @@ function escapeProperty(text: string): string {
 	return escapeData(text).replace(/:/g, '%3A').replace(/,/g, '%2C');
 }
 
-/** GitHub Actions workflow commands that annotate open claims and unreviewed agent edits on their code. */
+/** GitHub Actions workflow commands that annotate open claims and unverified agent code on their lines. */
 export function githubAnnotations(result: CiResult, service: ProoftreeService): string[] {
 	const config = service.config();
-	const level = result.unreviewedEdits === 'block' ? 'error' : 'warning';
-	const edits = result.unreviewed.map(edit =>
-		`::${level} file=${escapeProperty(edit.file)},line=${edit.startLine},endLine=${edit.endLine},title=${escapeProperty('Prooftree: agent edit kept without review')}::${escapeData(describeEdit(edit))}`);
+	const level = result.unverifiedAgentCode === 'block' ? 'error' : 'warning';
+	const edits = result.unverified.map(edit =>
+		`::${level} file=${escapeProperty(edit.file)},line=${edit.startLine},endLine=${edit.endLine},title=${escapeProperty('Prooftree: agent code without evidence')}::${escapeData(describeEdit(edit))}`);
 	return [...edits, ...result.open.flatMap(report => {
 		const title = escapeProperty(`Prooftree ${report.claim.id}: ${STATUS_LABEL[report.status]}`);
 		const message = escapeData(`${report.claim.statement}\nNext: ${nextStep(report, config)}`);
@@ -93,7 +93,7 @@ export function ciSummary(result: CiResult): string {
 	const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
 	const problems = [
 		...(result.open.length ? [plural(result.open.length, 'open claim')] : []),
-		...(result.unreviewed.length ? [`${plural(result.unreviewed.length, 'agent edit')} kept without review`] : []),
+		...(result.unverified.length ? [`${plural(result.unverified.length, 'agent edit')} without evidence`] : []),
 	];
 	const lines = [
 		`## Prooftree: ${problems.join(', ') || 'all claims discharged'}`,
@@ -111,12 +111,14 @@ export function ciSummary(result: CiResult): string {
 			lines.push(`| \`${report.claim.id}\` | ${STATUS_LABEL[report.status]} | ${report.claim.statement.replace(/\|/g, '\\|')} | ${where} |`);
 		}
 	}
-	if (result.unreviewed.length) {
-		const effect = result.unreviewedEdits === 'block' ? 'They fail this build.' : 'They do not fail the build.';
-		lines.push('', `### Agent edits kept without review`, '', `A person kept these agent-written lines without recording a review. ${effect}`, '');
-		lines.push('| Where | Written by | Kept by |', '| --- | --- | --- |');
-		for (const edit of result.unreviewed) {
-			lines.push(`| ${edit.file}:${edit.startLine}-${edit.endLine} | ${edit.kept.model ?? edit.kept.agent ?? 'agent'} | ${edit.kept.by.name}, ${edit.kept.at.slice(0, 10)} |`);
+	if (result.unverified.length) {
+		const effect = result.unverifiedAgentCode === 'block' ? 'They fail this build.' : 'They do not fail the build.';
+		lines.push('', `### Agent code without evidence`, '', `No person reviewed these agent-written lines and no checked or approved claim covers them. ${effect}`, '');
+		lines.push('| Where | Written by | How |', '| --- | --- | --- |');
+		for (const edit of result.unverified) {
+			const date = edit.source.at.slice(0, 10);
+			const how = edit.source.decision === 'written' ? `written${edit.source.tool ? ` with ${edit.source.tool}` : ''}, ${date}` : `kept by ${edit.source.by.name}, ${date}`;
+			lines.push(`| ${edit.file}:${editLines(edit)} | ${writerOf(edit.source)} | ${how} |`);
 		}
 	}
 	return lines.join('\n') + '\n';

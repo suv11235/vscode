@@ -102,22 +102,25 @@ export interface EditSpan {
 }
 
 /**
- * Agent-written lines a person kept. Keeping an edit and reviewing it are different acts:
- * `accepted` records that the person kept the lines, `reviewed` that they also read them.
- * Either way the record covers the exact text kept, so a review never extends to lines that
- * changed after it.
+ * Agent-written lines. `written` is recorded by the agent's hooks as it writes, from any
+ * agent (Claude Code in a terminal, VS Code chat). In the editor, keeping an edit and
+ * reviewing it are different acts: `accepted` records that a person kept the lines,
+ * `reviewed` that they also read them. Every record covers the exact text, so a review never
+ * extends to lines that changed after it.
  */
 export interface EditRecord extends RecordBase {
 	readonly kind: 'edit';
-	readonly decision: 'accepted' | 'reviewed';
+	readonly decision: 'written' | 'accepted' | 'reviewed';
 	readonly spans: readonly EditSpan[];
-	/** For a review of lines kept earlier: the record that kept them. */
+	/** For a review of lines written or kept earlier: the record it reviews. */
 	readonly reviewOf?: string;
-	/** The chat agent, model, session and request that wrote the lines, when known. */
+	/** The agent, model, session and request that wrote the lines, when known. */
 	readonly agent?: string;
 	readonly model?: string;
 	readonly session?: string;
 	readonly request?: string;
+	/** The agent's tool that wrote the lines, for `written` records. */
+	readonly tool?: string;
 }
 
 export type LedgerRecord = ClaimRecord | EvidenceRecord | ReviewRecord | RetractRecord | EditRecord;

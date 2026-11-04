@@ -245,6 +245,11 @@
           "command": "prooftree.reviewEdit",
           "when": "view == prooftree.claims && viewItem == prooftree.edit",
           "group": "inline@1"
+        },
+        {
+          "command": "prooftree.declareClaim",
+          "when": "view == prooftree.claims && viewItem == prooftree.edit",
+          "group": "inline@2"
         }
       ],
       "editor/context": [
@@ -732,8 +737,8 @@
     },
     "colors": [
       {
-        "id": "prooftree.unreviewedEditBackground",
-        "description": "Background of agent-written lines a person kept without reviewing.",
+        "id": "prooftree.unverifiedAgentCodeBackground",
+        "description": "Background of agent-written lines that no person reviewed and no checked or approved claim covers.",
         "defaults": {
           "dark": "#a371f714",
           "light": "#8250df0f",
@@ -742,8 +747,8 @@
         }
       },
       {
-        "id": "prooftree.unreviewedEditOverviewRuler",
-        "description": "Overview ruler mark and icon color for agent-written lines kept without review.",
+        "id": "prooftree.unverifiedAgentCodeOverviewRuler",
+        "description": "Overview ruler mark and icon color for agent-written lines without a review or passing check.",
         "defaults": {
           "dark": "#a371f7",
           "light": "#8250df",

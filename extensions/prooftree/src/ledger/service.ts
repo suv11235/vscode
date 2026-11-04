@@ -8,7 +8,7 @@ import * as path from 'path';
 import { createAnchor } from './anchors';
 import { runCommand } from './checks';
 import { CheckConfig, parseConfig, ProoftreeConfig } from './config';
-import { createEditSpan, EditReport, evaluateEdits } from './edits';
+import { changedLines, createEditSpan, EditReport, evaluateEdits } from './edits';
 import { hashCheckInputs } from './inputs';
 import { locateDeclaration, runLeanCheck } from './lean';
 import { CONFIG_FILE, LEDGER_DIR, LEDGER_FILE, LedgerState, newId, readLedger, serializeRecord } from './ledger';
@@ -54,11 +54,23 @@ export interface LineRange {
 export interface KeptEditInput {
 	readonly file: string;
 	readonly ranges: readonly LineRange[];
-	readonly decision: EditRecord['decision'];
+	readonly decision: 'accepted' | 'reviewed';
 	readonly agent?: string;
 	readonly model?: string;
 	readonly session?: string;
 	readonly request?: string;
+}
+
+/** An agent's tool call that may have changed `file`, as reported by the agent's hooks. */
+export interface AgentWriteInput {
+	readonly file: string;
+	/** The file before the tool ran; undefined when it did not exist. */
+	readonly before: string | undefined;
+	readonly agent?: string;
+	readonly model?: string;
+	readonly session?: string;
+	readonly request?: string;
+	readonly tool?: string;
 }
 
 export interface CheckOutcome {
@@ -87,6 +99,11 @@ export class ProoftreeService {
 
 	config(): ProoftreeConfig {
 		return parseConfig(readIfExists(this.configPath));
+	}
+
+	/** Whether the workspace uses Prooftree: it has a `.prooftree` folder. */
+	exists(): boolean {
+		return fs.existsSync(path.dirname(this.ledgerPath));
 	}
 
 	state(): LedgerState {
@@ -243,9 +260,36 @@ export class ProoftreeService {
 		this.append(record);
 	}
 
-	/** Agent-written lines people kept, where they are now. */
-	edits(state = this.state()): EditReport[] {
-		return evaluateEdits(state.edits, file => this.readFile(file));
+	/** Agent-written lines, where they are now and what evidence covers them. */
+	edits(state = this.state(), reports = this.evaluate(state)): EditReport[] {
+		return evaluateEdits(state.edits, file => this.readFile(file), reports.values());
+	}
+
+	/**
+	 * Records the lines an agent's tool call changed in a file, from the file as it was before
+	 * the call. Returns nothing when the call changed no lines.
+	 */
+	recordAgentWrite(input: AgentWriteInput, by: Actor): EditRecord | undefined {
+		if (by.kind !== 'agent') {
+			throw new Error('Only agents record lines they wrote; people keep or review them.');
+		}
+		const file = this.relativePath(input.file);
+		const content = this.readFile(file);
+		if (content === undefined) {
+			return undefined;
+		}
+		const ranges = changedLines(input.before ?? '', content);
+		if (!ranges.length) {
+			return undefined;
+		}
+		const record: EditRecord = {
+			v: 1, kind: 'edit', id: newId('k'), at: now(), by,
+			decision: 'written',
+			spans: ranges.map(range => createEditSpan(file, content, range.startLine, range.endLine)),
+			...definedOnly({ agent: input.agent, model: input.model, session: input.session, request: input.request, tool: input.tool }),
+		};
+		this.append(record);
+		return record;
 	}
 
 	/** Records agent-written lines a person kept, as accepted or as reviewed. */
@@ -267,8 +311,8 @@ export class ProoftreeService {
 	}
 
 	/**
-	 * Records that a person reviewed the kept agent lines in `file` that were not reviewed yet,
-	 * only within `lines` when given. Returns one review per keep it covers.
+	 * Records that a person reviewed the agent lines in `file` that were not reviewed yet,
+	 * only within `lines` when given. Returns one review per record that wrote or kept them.
 	 */
 	reviewEdits(file: string, lines: LineRange | undefined, by: Actor): EditRecord[] {
 		requireHuman(by, 'review an agent\'s edit');
@@ -277,18 +321,18 @@ export class ProoftreeService {
 		if (content === undefined) {
 			throw new Error(`${relative} does not exist.`);
 		}
-		const byKeep = new Map<EditRecord, EditSpan[]>();
+		const bySource = new Map<EditRecord, EditSpan[]>();
 		for (const report of this.edits()) {
 			const startLine = Math.max(report.startLine, lines?.startLine ?? report.startLine);
 			const endLine = Math.min(report.endLine, lines?.endLine ?? report.endLine);
-			if (report.file === relative && report.status === 'unreviewed' && startLine <= endLine) {
-				byKeep.set(report.kept, [...(byKeep.get(report.kept) ?? []), createEditSpan(relative, content, startLine, endLine)]);
+			if (report.file === relative && report.status !== 'reviewed' && startLine <= endLine) {
+				bySource.set(report.source, [...(bySource.get(report.source) ?? []), createEditSpan(relative, content, startLine, endLine)]);
 			}
 		}
-		const reviews = [...byKeep].map(([kept, spans]): EditRecord => ({
+		const reviews = [...bySource].map(([source, spans]): EditRecord => ({
 			v: 1, kind: 'edit', id: newId('k'), at: now(), by,
-			decision: 'reviewed', spans, reviewOf: kept.id,
-			...definedOnly({ agent: kept.agent, model: kept.model, session: kept.session, request: kept.request }),
+			decision: 'reviewed', spans, reviewOf: source.id,
+			...definedOnly({ agent: source.agent ?? (source.by.kind === 'agent' ? source.by.name : undefined), model: source.model, session: source.session, request: source.request }),
 		}));
 		reviews.forEach(review => this.append(review));
 		return reviews;

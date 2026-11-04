@@ -23,13 +23,13 @@ const DEPTH_NAME: Readonly<Record<ReasoningDepth, string>> = { 1: 'summary', 2: 
  * A claim at a reasoning depth. Deeper levels add explanation and provenance; they never
  * change the status, so more detail is not more certainty.
  */
-export function claimMarkdown(report: ClaimReport, config: ProoftreeConfig, depth: ReasoningDepth, reports: ReadonlyMap<string, ClaimReport>, unreviewedLines = 0): vscode.MarkdownString {
+export function claimMarkdown(report: ClaimReport, config: ProoftreeConfig, depth: ReasoningDepth, reports: ReadonlyMap<string, ClaimReport>, unverifiedLines = 0): vscode.MarkdownString {
 	const markdown = new vscode.MarkdownString(undefined, true);
 	const reasoning = report.claim.reasoning ?? [];
 	markdown.appendMarkdown(`$(${STATUS_STYLE[report.status].icon}) **${STATUS_LABEL[report.status]}** · \`${report.claim.id}\` rev ${report.claim.revision}\n\n`);
 	markdown.appendText(report.claim.statement);
-	if (unreviewedLines) {
-		markdown.appendMarkdown(`\n\n$(eye-closed) ${unreviewedLines} agent-written line${unreviewedLines === 1 ? '' : 's'} in this code ${unreviewedLines === 1 ? 'was' : 'were'} kept without review.`);
+	if (unverifiedLines) {
+		markdown.appendMarkdown(`\n\n$(eye-closed) ${unverifiedLines} agent-written line${unverifiedLines === 1 ? '' : 's'} in this code ${unverifiedLines === 1 ? 'has' : 'have'} no review and no passing check.`);
 	}
 	reasoning.slice(0, depth).forEach(reason => {
 		markdown.appendMarkdown('\n\n> ');
@@ -83,18 +83,25 @@ export function sortReports(reports: Iterable<ClaimReport>): ClaimReport[] {
 	return [...reports].sort((a, b) => STATUS_STYLE[a.status].order - STATUS_STYLE[b.status].order || a.claim.at.localeCompare(b.claim.at));
 }
 
-/** Hover text for agent-written lines a person kept without reviewing. */
+/** Hover text for agent-written lines that only the agent vouches for. */
 export function editMarkdown(edit: EditReport): vscode.MarkdownString {
 	const markdown = new vscode.MarkdownString(undefined, true);
-	markdown.isTrusted = { enabledCommands: ['prooftree.reviewEdit'] };
+	markdown.isTrusted = { enabledCommands: ['prooftree.reviewEdit', 'prooftree.declareClaim'] };
+	const { source } = edit;
 	const lines = edit.startLine === edit.endLine ? `line ${edit.startLine}` : `lines ${edit.startLine}-${edit.endLine}`;
-	const writer = [edit.kept.model, edit.kept.agent].filter(Boolean).join(' · ') || 'an agent';
+	const writer = [source.model, source.agent ?? (source.by.kind === 'agent' ? source.by.name : undefined)].filter(Boolean).join(' · ') || 'an agent';
 	const args = encodeURIComponent(JSON.stringify([{ file: edit.file, startLine: edit.startLine, endLine: edit.endLine }]));
-	markdown.appendMarkdown(`$(eye-closed) **Agent edit kept without review** · ${lines}\n\n`);
+	markdown.appendMarkdown(`$(eye-closed) **Agent code without evidence** · ${lines}\n\n`);
 	markdown.appendMarkdown(`Written by `);
 	markdown.appendText(writer);
-	markdown.appendMarkdown(` · kept by `);
-	markdown.appendText(`${edit.kept.by.name} on ${new Date(edit.kept.at).toLocaleString()}`);
-	markdown.appendMarkdown(`\n\nKeeping an edit does not record that anyone read it. [Mark reviewed](command:prooftree.reviewEdit?${args} "Record that you reviewed these lines")`);
+	if (source.decision === 'written') {
+		markdown.appendText(`${source.tool ? ` with ${source.tool}` : ''} on ${new Date(source.at).toLocaleString()}`);
+		markdown.appendMarkdown(`\n\nNo person has reviewed these lines and no passing check covers them.`);
+	} else {
+		markdown.appendMarkdown(` · kept by `);
+		markdown.appendText(`${source.by.name} on ${new Date(source.at).toLocaleString()}`);
+		markdown.appendMarkdown(`\n\nKeeping an edit does not record that anyone read it, and no passing check covers these lines.`);
+	}
+	markdown.appendMarkdown(` [Mark reviewed](command:prooftree.reviewEdit?${args} "Record that you reviewed these lines") · [Declare a claim](command:prooftree.declareClaim?${args} "State what these lines make true, then run a check")`);
 	return markdown;
 }

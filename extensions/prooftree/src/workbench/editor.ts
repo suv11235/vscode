@@ -65,7 +65,7 @@ export class ClaimHoverProvider implements vscode.HoverProvider {
 		}
 		const previous = context?.previousHover && this._depths.get(context.previousHover);
 		const depth = Math.min(3, Math.max(1, (previous ?? this.model.depth) + (context?.verbosityDelta ?? 0))) as ReasoningDepth;
-		const contents = hits.map(({ report }) => claimMarkdown(report, this.model.config, depth, this.model.reports, this.model.unreviewedLinesIn(report)));
+		const contents = hits.map(({ report }) => claimMarkdown(report, this.model.config, depth, this.model.reports, this.model.unverifiedLinesIn(report)));
 		const range = hits.map(({ anchor }) => anchorRange(anchor)).reduce((a, b) => a.intersection(b) ?? a);
 		const hover = new vscode.VerboseHover(contents, range, depth < 3, depth > 1);
 		this._depths.set(hover, depth);
@@ -122,27 +122,28 @@ export class ClaimDecorations implements vscode.Disposable {
 	}
 }
 
-/** Who wrote and kept the hovered agent lines, while they are not reviewed. */
+/** Who wrote the hovered agent lines and how they got in, while nothing covers them. */
 export class EditHoverProvider implements vscode.HoverProvider {
 
 	constructor(private readonly model: ProoftreeModel) { }
 
 	provideHover(document: vscode.TextDocument, position: vscode.Position): vscode.Hover | undefined {
-		const edit = this.model.editsIn(document.uri).find(candidate => candidate.status === 'unreviewed' && editRange(candidate).contains(position));
+		const edit = this.model.editsIn(document.uri).find(candidate => candidate.status === 'unverified' && editRange(candidate).contains(position));
 		return edit && new vscode.Hover(editMarkdown(edit), editRange(edit));
 	}
 }
 
 /**
- * A tint and overview ruler mark on agent-written lines that a person kept without reviewing.
- * Reviewed lines are left plain.
+ * A tint and overview ruler mark on agent-written lines that only the agent vouches for,
+ * whether an agent wrote them from a terminal or a person kept them in the editor. Lines a
+ * person reviewed, or that a checked or approved claim covers, are left plain.
  */
 export class EditDecorations implements vscode.Disposable {
 
 	private readonly _type = vscode.window.createTextEditorDecorationType({
 		isWholeLine: true,
-		backgroundColor: new vscode.ThemeColor('prooftree.unreviewedEditBackground'),
-		overviewRulerColor: new vscode.ThemeColor('prooftree.unreviewedEditOverviewRuler'),
+		backgroundColor: new vscode.ThemeColor('prooftree.unverifiedAgentCodeBackground'),
+		overviewRulerColor: new vscode.ThemeColor('prooftree.unverifiedAgentCodeOverviewRuler'),
 		overviewRulerLane: vscode.OverviewRulerLane.Right,
 	});
 	private readonly _disposables: vscode.Disposable[] = [];
@@ -157,7 +158,7 @@ export class EditDecorations implements vscode.Disposable {
 
 	private updateAll(): void {
 		for (const editor of vscode.window.visibleTextEditors) {
-			const ranges = this.model.editsIn(editor.document.uri).filter(edit => edit.status === 'unreviewed').map(editRange);
+			const ranges = this.model.editsIn(editor.document.uri).filter(edit => edit.status === 'unverified').map(editRange);
 			editor.setDecorations(this._type, ranges);
 		}
 	}

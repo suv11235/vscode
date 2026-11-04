@@ -6,7 +6,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { AnchorState } from '../ledger/anchors';
-import { EditReport } from '../ledger/edits';
+import { EditReport, editLines, writerOf } from '../ledger/edits';
 import { describeAnchor, nextStep, STATUS_LABEL } from '../ledger/format';
 import { ClaimReport } from '../ledger/status';
 import { anchorRange, editRange, ProoftreeModel } from './model';
@@ -40,11 +40,11 @@ export class ClaimsView implements vscode.TreeDataProvider<ClaimsNode>, vscode.D
 				return [{ kind: 'detail', label: 'Cannot read the ledger', description: this.model.error, icon: 'warning' }];
 			}
 			const roots = [...reports.values()].filter(report => !report.claim.parent || !reports.has(report.claim.parent));
-			const edits: ClaimsNode[] = this.model.unreviewedEdits.length ? [{ kind: 'edits' }] : [];
+			const edits: ClaimsNode[] = this.model.unverifiedEdits.length ? [{ kind: 'edits' }] : [];
 			return [...edits, ...sortReports(roots).map(report => ({ kind: 'claim' as const, report }))];
 		}
 		if (node.kind === 'edits') {
-			return this.model.unreviewedEdits.map(edit => ({ kind: 'edit', edit }));
+			return this.model.unverifiedEdits.map(edit => ({ kind: 'edit', edit }));
 		}
 		if (node.kind !== 'claim') {
 			return [];
@@ -84,7 +84,7 @@ export class ClaimsView implements vscode.TreeDataProvider<ClaimsNode>, vscode.D
 				const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.Collapsed);
 				item.description = `${STATUS_LABEL[report.status]} · ${report.claim.id}`;
 				item.iconPath = statusIcon(report.status);
-				item.tooltip = claimMarkdown(report, this.model.config, this.model.depth, this.model.reports, this.model.unreviewedLinesIn(report));
+				item.tooltip = claimMarkdown(report, this.model.config, this.model.depth, this.model.reports, this.model.unverifiedLinesIn(report));
 				item.contextValue = 'prooftree.claim';
 				return item;
 			}
@@ -105,17 +105,19 @@ export class ClaimsView implements vscode.TreeDataProvider<ClaimsNode>, vscode.D
 				return item;
 			}
 			case 'edits': {
-				const count = this.model.unreviewedEdits.length;
-				const item = new vscode.TreeItem('Kept without review', vscode.TreeItemCollapsibleState.Expanded);
-				item.description = `${count} agent edit${count === 1 ? '' : 's'}`;
-				item.tooltip = 'Agent-written lines a person kept without recording a review. Keeping an edit is not reviewing it.';
-				item.iconPath = new vscode.ThemeIcon('eye-closed', new vscode.ThemeColor('prooftree.unreviewedEditOverviewRuler'));
+				const count = this.model.unverifiedEdits.length;
+				const item = new vscode.TreeItem('Agent code without evidence', vscode.TreeItemCollapsibleState.Expanded);
+				item.description = `${count} edit${count === 1 ? '' : 's'}`;
+				item.tooltip = 'Agent-written lines that no person reviewed and no checked or approved claim covers. Keeping an edit is not reviewing it.';
+				item.iconPath = new vscode.ThemeIcon('eye-closed', new vscode.ThemeColor('prooftree.unverifiedAgentCodeOverviewRuler'));
 				return item;
 			}
 			case 'edit': {
 				const { edit } = node;
-				const item = new vscode.TreeItem(`${path.basename(edit.file)}:${edit.startLine}-${edit.endLine}`);
-				item.description = `${edit.kept.model ?? edit.kept.agent ?? 'agent'} · kept by ${edit.kept.by.name}`;
+				const item = new vscode.TreeItem(`${path.basename(edit.file)}:${editLines(edit)}`);
+				item.description = edit.source.decision === 'written'
+					? `${writerOf(edit.source)}${edit.source.tool ? ` · ${edit.source.tool}` : ''}`
+					: `${writerOf(edit.source)} · kept by ${edit.source.by.name}`;
 				item.tooltip = editMarkdown(edit);
 				item.resourceUri = vscode.Uri.joinPath(this.model.folder.uri, edit.file);
 				item.iconPath = new vscode.ThemeIcon('sparkle');

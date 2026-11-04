@@ -64,30 +64,31 @@ export class ProoftreeModel implements vscode.Disposable {
 		return this._reports;
 	}
 
-	/** Agent-written lines people kept, reviewed or not. */
+	/** Agent-written lines, whatever covers them. */
 	get edits(): readonly EditReport[] {
 		return this._edits;
 	}
 
-	get unreviewedEdits(): EditReport[] {
-		return this._edits.filter(edit => edit.status === 'unreviewed');
+	/** Agent-written lines no review or passing check covers. */
+	get unverifiedEdits(): EditReport[] {
+		return this._edits.filter(edit => edit.status === 'unverified');
 	}
 
-	/** Kept agent lines in the given document. */
+	/** Agent-written lines in the given document. */
 	editsIn(uri: vscode.Uri): EditReport[] {
 		const file = this.relativePath(uri);
 		return this._edits.filter(edit => edit.file === file);
 	}
 
-	/** How many agent-written lines inside the claim's code were kept without review. */
-	unreviewedLinesIn(report: ClaimReport): number {
+	/** How many agent-written lines inside the claim's code nothing but the agent vouches for. */
+	unverifiedLinesIn(report: ClaimReport): number {
 		let count = 0;
 		for (const anchor of report.anchors) {
 			if (anchor.startLine === undefined || anchor.endLine === undefined || anchor.anchor.role === 'formal') {
 				continue;
 			}
 			for (const edit of this._edits) {
-				if (edit.status === 'unreviewed' && edit.file === anchor.anchor.file) {
+				if (edit.status === 'unverified' && edit.file === anchor.anchor.file) {
 					count += Math.max(0, Math.min(edit.endLine, anchor.endLine) - Math.max(edit.startLine, anchor.startLine) + 1);
 				}
 			}
@@ -145,7 +146,7 @@ export class ProoftreeModel implements vscode.Disposable {
 			this._config = this.service.config();
 			const state = this.service.state();
 			this._reports = this.service.evaluate(state);
-			this._edits = this.service.edits(state);
+			this._edits = this.service.edits(state, this._reports);
 			this._error = undefined;
 		} catch (error) {
 			this._error = error instanceof Error ? error.message : String(error);

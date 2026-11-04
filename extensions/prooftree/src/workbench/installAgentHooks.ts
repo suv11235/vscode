@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
-const HOOK_EVENTS = ['SessionStart', 'PostToolUse', 'Stop', 'SubagentStop'] as const;
+const HOOK_EVENTS = ['SessionStart', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop'] as const;
 
 interface Target {
 	readonly label: string;

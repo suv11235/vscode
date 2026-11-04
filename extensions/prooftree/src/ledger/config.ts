@@ -31,15 +31,15 @@ export interface ProoftreeConfig {
 		readonly scope: 'agent' | 'all';
 		/** Statuses that discharge a claim, and that a dependency must have to not block. */
 		readonly accept: readonly ClaimStatus[];
-		/** What CI does about agent-written lines that were kept without review. */
-		readonly unreviewedEdits: 'allow' | 'warn' | 'block';
+		/** What CI does about agent-written lines that no review or passing check covers. */
+		readonly unverifiedAgentCode: 'allow' | 'warn' | 'block';
 	};
 }
 
 export const DEFAULT_CONFIG: ProoftreeConfig = {
 	checks: {},
 	checkTimeoutSeconds: 300,
-	gate: { onStop: true, scope: 'agent', accept: ['checked', 'reviewed', 'proved'], unreviewedEdits: 'warn' },
+	gate: { onStop: true, scope: 'agent', accept: ['checked', 'reviewed', 'proved'], unverifiedAgentCode: 'warn' },
 };
 
 type RawCheck = string | { kind?: 'command' | 'lean'; command?: string; inputs?: string[] };

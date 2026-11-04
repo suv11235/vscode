@@ -133,6 +133,7 @@ export function agentContract(config: ProoftreeConfig): string {
 		`Discharge each claim by running a configured check${checks.length ? `: ${checks.join('; ')}` : ' (none configured yet)'}. Assertions do not count.`,
 		'Where a Lean statement of the property exists, link it (formal: file and declaration) and run the lean check; a proof that uses sorry fails.',
 		'Editing anchored code, a premise, a step or a check\'s inputs makes evidence stale.',
+		'Lines you write are recorded. People see them as unverified agent code until a claim about them passes a check or a person reviews them.',
 		config.gate.onStop ? `You cannot finish while your claims are not ${config.gate.accept.join(', ')}.` : '',
 		'Use the prooftree tools; never edit the ledger file directly.',
 	].filter(Boolean).join(' ');

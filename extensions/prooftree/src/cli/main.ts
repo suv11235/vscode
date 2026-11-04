@@ -27,8 +27,8 @@ const USAGE = [
 	'        [--why <reasoning>]... [--formal <file.lean#declaration>]',
 	'  check <claim> <check>               run a configured check for a claim',
 	'  review <claim> approve|reject [note]',
-	'  edits [--all]                       show agent-written lines people kept without review',
-	'  review-edits <file[:start[-end]]>   record that you reviewed the kept agent lines there',
+	'  edits [--all]                       show agent-written lines no review or passing check covers',
+	'  review-edits <file[:start[-end]]>   record that you reviewed the agent-written lines there',
 	'  ci [--rerun] [--scope all|agent]    fail when claims are open; annotate them on GitHub',
 	'',
 	'Options: --root <dir> (default: nearest folder with .prooftree or .git), --agent <name> (act as an agent)',
@@ -81,7 +81,7 @@ async function main(argv: string[]): Promise<number> {
 	if (command === 'hook') {
 		const event = JSON.parse((await readStdin()) || '{}');
 		const service = new ProoftreeService(findWorkspaceRoot(options.root?.[0] ?? event.cwd ?? process.cwd()));
-		const result = handleHook(event, service);
+		const result = handleHook(event, service, { agent: options.agent?.[0] });
 		if (result.stdout) {
 			process.stdout.write(result.stdout + '\n');
 		}
@@ -153,8 +153,8 @@ async function main(argv: string[]): Promise<number> {
 			return 0;
 		}
 		case 'edits': {
-			const edits = service.edits().filter(edit => options.all || edit.status === 'unreviewed');
-			console.log(edits.length ? edits.map(describeEdit).join('\n') : options.all ? 'No kept agent edits.' : 'Every kept agent edit has been reviewed.');
+			const edits = service.edits().filter(edit => options.all || edit.status === 'unverified');
+			console.log(edits.length ? edits.map(describeEdit).join('\n') : options.all ? 'No agent-written lines are recorded.' : 'A review or a passing check covers every agent-written line.');
 			return 0;
 		}
 		case 'review-edits': {
@@ -165,7 +165,7 @@ async function main(argv: string[]): Promise<number> {
 			const lines = at.startLine !== undefined ? { startLine: at.startLine, endLine: at.endLine ?? at.startLine } : undefined;
 			const reviews = service.reviewEdits(at.file, lines, actor);
 			const count = reviews.reduce((sum, review) => sum + review.spans.reduce((lineCount, span) => lineCount + span.endLine - span.startLine + 1, 0), 0);
-			console.log(count ? `Recorded your review of ${count} kept agent line${count === 1 ? '' : 's'} in ${at.file}.` : `No unreviewed kept agent lines in ${args[0]}.`);
+			console.log(count ? `Recorded your review of ${count} agent-written line${count === 1 ? '' : 's'} in ${at.file}.` : `No unreviewed agent-written lines in ${args[0]}.`);
 			return 0;
 		}
 		case 'ci': {

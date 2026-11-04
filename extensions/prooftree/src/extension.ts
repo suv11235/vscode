@@ -11,7 +11,6 @@ import { WORKFLOW_FILE, workflowTemplate } from './ledger/ci';
 import { describeCheck } from './ledger/config';
 import { STATUS_LABEL } from './ledger/format';
 import { Actor } from './ledger/model';
-import { LEDGER_DIR } from './ledger/ledger';
 import { AnchorInput, KeptEditInput, LineRange } from './ledger/service';
 import { ClaimReport } from './ledger/status';
 import { registerAgentTools } from './workbench/agentTools';
@@ -27,7 +26,7 @@ const CONFIG_TEMPLATE = {
 		lean: { kind: 'lean', inputs: ['lakefile.*', 'lean-toolchain'] },
 	},
 	checkTimeoutSeconds: 300,
-	gate: { onStop: true, scope: 'agent', accept: ['checked', 'reviewed', 'proved'], unreviewedEdits: 'warn' },
+	gate: { onStop: true, scope: 'agent', accept: ['checked', 'reviewed', 'proved'], unverifiedAgentCode: 'warn' },
 };
 
 /** What the workbench reports when a person keeps an agent's edit (see contrib/prooftree). */
@@ -57,17 +56,17 @@ export function activate(context: vscode.ExtensionContext): void {
 	const updateStatusBar = () => {
 		const total = model.reports.size;
 		const open = model.obligations().length;
-		const unreviewed = model.unreviewedEdits.length;
+		const unverified = model.unverifiedEdits.length;
 		vscode.commands.executeCommand('setContext', 'prooftree.hasClaims', total > 0);
 		// Tells the workbench to offer Keep as Reviewed on agent edits.
-		vscode.commands.executeCommand('setContext', 'prooftree.enabled', fs.existsSync(path.join(folder.uri.fsPath, LEDGER_DIR)));
-		if (!total && !unreviewed && !model.error) {
+		vscode.commands.executeCommand('setContext', 'prooftree.enabled', model.service.exists());
+		if (!total && !unverified && !model.error) {
 			statusBar.hide();
 			return;
 		}
 		const claims = open ? `$(shield) ${total} · $(warning) ${open} open` : `$(verified-filled) ${total} claims`;
-		statusBar.text = model.error ? '$(warning) Prooftree' : claims + (unreviewed ? ` · $(eye-closed) ${unreviewed}` : '');
-		statusBar.tooltip = model.error ?? `${total} claims, ${open} not discharged` + (unreviewed ? `\n${unreviewed} kept agent edit${unreviewed === 1 ? '' : 's'} not reviewed` : '');
+		statusBar.text = model.error ? '$(warning) Prooftree' : claims + (unverified ? ` · $(eye-closed) ${unverified}` : '');
+		statusBar.tooltip = model.error ?? `${total} claims, ${open} not discharged` + (unverified ? `\n${unverified} agent edit${unverified === 1 ? '' : 's'} without a review or passing check` : '');
 		statusBar.backgroundColor = open || model.error ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined;
 		statusBar.show();
 	};
@@ -91,8 +90,12 @@ export function activate(context: vscode.ExtensionContext): void {
 		return picked?.report;
 	};
 
-	/** The selected lines of the active editor, if it shows a workspace file. */
-	const selectionAnchor = async (): Promise<AnchorInput | undefined> => {
+	/** Given lines of a workspace file, or else the selected lines of the active editor. */
+	const selectionAnchor = async (lines?: { file: string; startLine: number; endLine: number }): Promise<AnchorInput | undefined> => {
+		if (lines) {
+			await vscode.workspace.textDocuments.find(document => model.relativePath(document.uri) === lines.file)?.save();
+			return { file: vscode.Uri.joinPath(folder.uri, lines.file).fsPath, startLine: lines.startLine, endLine: lines.endLine };
+		}
 		const editor = vscode.window.activeTextEditor;
 		if (!editor || !model.relativePath(editor.document.uri)) {
 			return undefined;
@@ -137,14 +140,16 @@ export function activate(context: vscode.ExtensionContext): void {
 		registerAgentTools(model),
 		model.onDidChange(updateStatusBar),
 
-		command('prooftree.declareClaim', async () => {
-			const anchor = await selectionAnchor();
+		command('prooftree.declareClaim', async (argument?: ClaimsNode | { file: string; startLine: number; endLine: number }) => {
+			// From an agent's edit in the Claims view or its hover, the claim is about those lines.
+			const lines = argument && 'kind' in argument ? (argument.kind === 'edit' ? argument.edit : undefined) : argument;
+			const anchor = await selectionAnchor(lines);
 			if (!anchor) {
 				throw new Error('Open a workspace file and select the lines the claim is about.');
 			}
 			const statement = await vscode.window.showInputBox({
 				title: 'Declare claim',
-				prompt: 'What is true about the selected code?',
+				prompt: lines ? `What is true about ${lines.file}:${lines.startLine}-${lines.endLine}?` : 'What is true about the selected code?',
 				placeHolder: 'e.g. parseDate rejects months above 12',
 			});
 			const dependsOn = statement ? await pickPremises() : undefined;
@@ -260,7 +265,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		// Called by the workbench when a person keeps an agent's edit, with or without reviewing it.
 		vscode.commands.registerCommand('_prooftree.recordAgentEdit', (edit: KeptAgentEdit) => {
-			if (!fs.existsSync(path.join(folder.uri.fsPath, LEDGER_DIR)) || !model.relativePath(edit.uri)) {
+			if (!model.service.exists() || !model.relativePath(edit.uri)) {
 				return;
 			}
 			try {
@@ -286,23 +291,23 @@ export function activate(context: vscode.ExtensionContext): void {
 				const editor = vscode.window.activeTextEditor;
 				const relative = editor && model.relativePath(editor.document.uri);
 				if (!editor || !relative) {
-					throw new Error('Open a file with kept agent edits, or pick one in the Claims view.');
+					throw new Error('Open a file with agent-written lines, or pick an edit in the Claims view.');
 				}
 				file = relative;
 				const { start, end } = editor.selection;
 				const line = start.line + 1;
-				// With a selection, review just those lines; otherwise the kept edit under the cursor.
-				const atCursor = model.editsIn(editor.document.uri).find(edit => edit.status === 'unreviewed' && edit.startLine <= line && line <= edit.endLine);
+				// With a selection, review just those lines; otherwise the agent's edit under the cursor.
+				const atCursor = model.editsIn(editor.document.uri).find(edit => edit.status !== 'reviewed' && edit.startLine <= line && line <= edit.endLine);
 				lines = editor.selection.isEmpty
 					? atCursor && { startLine: atCursor.startLine, endLine: atCursor.endLine }
 					: { startLine: line, endLine: end.character === 0 && end.line > start.line ? end.line : end.line + 1 };
 				if (!lines) {
-					throw new Error('No unreviewed agent edit at the cursor. Select lines to review, or pick an edit in the Claims view.');
+					throw new Error('No unreviewed agent-written lines at the cursor. Select lines to review, or pick an edit in the Claims view.');
 				}
 			}
 			const reviews = model.service.reviewEdits(vscode.Uri.joinPath(folder.uri, file).fsPath, lines, human());
 			if (!reviews.length) {
-				vscode.window.showInformationMessage('Prooftree: those lines have no unreviewed agent edits.');
+				vscode.window.showInformationMessage('Prooftree: those lines have no unreviewed agent-written code.');
 			}
 		}),
 
