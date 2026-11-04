@@ -9,13 +9,17 @@ import { AnchorState } from '../ledger/anchors';
 import { describeAnchor, nextStep, STATUS_LABEL } from '../ledger/format';
 import { ClaimReport } from '../ledger/status';
 import { anchorRange, ProoftreeModel } from './model';
-import { claimTooltip, sortReports, statusIcon } from './presentation';
+import { claimMarkdown, sortReports, statusIcon } from './presentation';
 
 export type ClaimsNode =
-	| { readonly kind: 'claim'; readonly report: ClaimReport }
+	| { readonly kind: 'claim'; readonly report: ClaimReport; readonly number?: string }
 	| { readonly kind: 'anchor'; readonly report: ClaimReport; readonly anchor: AnchorState }
 	| { readonly kind: 'detail'; readonly label: string; readonly description?: string; readonly icon: string };
 
+/**
+ * Goals with their numbered steps, like a Prooftree statement outline. Top-level claims are
+ * sorted so what needs attention comes first; steps keep the order they were stated in.
+ */
 export class ClaimsView implements vscode.TreeDataProvider<ClaimsNode>, vscode.Disposable {
 
 	private readonly _onDidChangeTreeData = new vscode.EventEmitter<void>();
@@ -27,25 +31,35 @@ export class ClaimsView implements vscode.TreeDataProvider<ClaimsNode>, vscode.D
 	}
 
 	getChildren(node?: ClaimsNode): ClaimsNode[] {
+		const reports = this.model.reports;
 		if (!node) {
 			if (this.model.error) {
 				return [{ kind: 'detail', label: 'Cannot read the ledger', description: this.model.error, icon: 'warning' }];
 			}
-			return sortReports(this.model.reports.values()).map(report => ({ kind: 'claim', report }));
+			const roots = [...reports.values()].filter(report => !report.claim.parent || !reports.has(report.claim.parent));
+			return sortReports(roots).map(report => ({ kind: 'claim', report }));
 		}
 		if (node.kind !== 'claim') {
 			return [];
 		}
 		const { report } = node;
 		const config = this.model.config;
-		const children: ClaimsNode[] = report.anchors.map(anchor => ({ kind: 'anchor', report, anchor }));
-		for (const dependency of report.claim.dependsOn) {
-			const dependencyReport = this.model.reports.get(dependency);
-			if (dependencyReport) {
-				children.push({ kind: 'claim', report: dependencyReport });
-			} else {
-				children.push({ kind: 'detail', label: dependency, description: 'retracted or missing dependency', icon: 'warning' });
+		const children: ClaimsNode[] = [];
+		report.steps.forEach((step, index) => {
+			const stepReport = reports.get(step);
+			if (stepReport) {
+				children.push({ kind: 'claim', report: stepReport, number: `${node.number ?? ''}${index + 1}.` });
 			}
+		});
+		for (const reason of (report.claim.reasoning ?? []).slice(0, this.model.depth)) {
+			children.push({ kind: 'detail', label: reason, icon: 'lightbulb' });
+		}
+		children.push(...report.anchors.map(anchor => ({ kind: 'anchor' as const, report, anchor })));
+		for (const premise of report.claim.dependsOn) {
+			const premiseReport = reports.get(premise);
+			children.push(premiseReport
+				? { kind: 'claim', report: premiseReport }
+				: { kind: 'detail', label: premise, description: 'retracted or missing premise', icon: 'warning' });
 		}
 		children.push({ kind: 'detail', label: 'Machine', description: report.check ? `${report.machine} · ${report.check.check} · ${report.check.summary}` : report.machine, icon: 'beaker' });
 		children.push({ kind: 'detail', label: 'Review', description: report.reviewRecord ? `${report.review} · ${report.reviewRecord.by.name}` : report.review, icon: 'person' });
@@ -59,20 +73,21 @@ export class ClaimsView implements vscode.TreeDataProvider<ClaimsNode>, vscode.D
 		switch (node.kind) {
 			case 'claim': {
 				const { report } = node;
-				const item = new vscode.TreeItem(report.claim.statement, vscode.TreeItemCollapsibleState.Collapsed);
-				item.id = undefined; // the same claim can appear as a dependency of several claims
+				const label = node.number ? `${node.number} ${report.claim.statement}` : report.claim.statement;
+				const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.Collapsed);
 				item.description = `${STATUS_LABEL[report.status]} · ${report.claim.id}`;
 				item.iconPath = statusIcon(report.status);
-				item.tooltip = claimTooltip(report, this.model.config);
+				item.tooltip = claimMarkdown(report, this.model.config, this.model.depth, this.model.reports);
 				item.contextValue = 'prooftree.claim';
 				return item;
 			}
 			case 'anchor': {
 				const { anchor } = node;
-				const item = new vscode.TreeItem(path.basename(anchor.anchor.file));
-				item.description = describeAnchor(anchor).slice(anchor.anchor.file.length);
+				const formal = anchor.anchor.role === 'formal';
+				const item = new vscode.TreeItem(formal && node.report.claim.formal ? `Lean: ${node.report.claim.formal.declaration}` : path.basename(anchor.anchor.file));
+				item.description = describeAnchor(anchor).slice(formal ? 0 : anchor.anchor.file.length);
 				item.resourceUri = vscode.Uri.joinPath(this.model.folder.uri, anchor.anchor.file);
-				item.iconPath = new vscode.ThemeIcon(anchor.kind === 'changed' || anchor.kind === 'missing' ? 'diff-modified' : 'symbol-file');
+				item.iconPath = new vscode.ThemeIcon(anchor.kind === 'changed' || anchor.kind === 'missing' ? 'diff-modified' : formal ? 'symbol-function' : 'symbol-file');
 				if (anchor.kind !== 'missing') {
 					item.command = {
 						command: 'vscode.open',
@@ -85,7 +100,7 @@ export class ClaimsView implements vscode.TreeDataProvider<ClaimsNode>, vscode.D
 			case 'detail': {
 				const item = new vscode.TreeItem(node.label);
 				item.description = node.description;
-				item.tooltip = node.description;
+				item.tooltip = node.description ?? node.label;
 				item.iconPath = new vscode.ThemeIcon(node.icon);
 				return item;
 			}

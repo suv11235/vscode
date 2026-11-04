@@ -3,11 +3,14 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import * as fs from 'fs';
 import { handleHook } from '../agent/hook';
 import { serveMcp } from '../agent/mcp';
 import { localHuman } from '../ledger/actor';
-import { describeObligations, describeReport } from '../ledger/format';
-import { Actor } from '../ledger/model';
+import { ciSummary, githubAnnotations, runCi } from '../ledger/ci';
+import { describeObligations, describeOutline, describeReport, ReasoningDepth } from '../ledger/format';
+import { buildGraph, describeGraph, findNode, neighborhood } from '../ledger/graph';
+import { Actor, FormalLink } from '../ledger/model';
 import { AnchorInput, findWorkspaceRoot, ProoftreeService } from '../ledger/service';
 
 const USAGE = [
@@ -15,11 +18,15 @@ const USAGE = [
 	'',
 	'  hook                                read an agent hook event (JSON) from stdin',
 	'  mcp                                 serve the agent tools over MCP on stdio',
-	'  status [claim]                      show claims',
+	'  status [claim] [--depth 1|2|3]      show claims',
+	'  outline [--depth 1|2|3]             show goals and their numbered steps',
 	'  obligations                         show claims that are not discharged',
-	'  claim <statement> --at <file[:start[-end]]>... [--dep <claim>]...',
+	'  graph [focus] [--radius n]          show the knowledge graph, or what is connected to focus',
+	'  claim <statement> [--at <file[:start[-end]]>]... [--dep <claim>]... [--parent <goal>]',
+	'        [--why <reasoning>]... [--formal <file.lean#declaration>]',
 	'  check <claim> <check>               run a configured check for a claim',
 	'  review <claim> approve|reject [note]',
+	'  ci [--rerun] [--scope all|agent]    fail when claims are open; annotate them on GitHub',
 	'',
 	'Options: --root <dir> (default: nearest folder with .prooftree or .git), --agent <name> (act as an agent)',
 ].join('\n');
@@ -31,6 +38,17 @@ function parseAt(value: string): AnchorInput {
 		startLine: match[2] ? Number(match[2]) : undefined,
 		endLine: match[3] ? Number(match[3]) : match[2] ? Number(match[2]) : undefined,
 	};
+}
+
+function parseFormal(value: string | undefined): FormalLink | undefined {
+	if (!value) {
+		return undefined;
+	}
+	const [file, declaration] = value.split('#');
+	if (!file || !declaration) {
+		throw new Error('--formal takes <file.lean#declaration>.');
+	}
+	return { file, declaration };
 }
 
 function readStdin(): Promise<string> {
@@ -46,9 +64,11 @@ function readStdin(): Promise<string> {
 async function main(argv: string[]): Promise<number> {
 	const positional: string[] = [];
 	const options: Record<string, string[]> = {};
+	const flags = new Set(['rerun']);
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i].startsWith('--')) {
-			(options[argv[i].slice(2)] ??= []).push(argv[++i] ?? '');
+			const name = argv[i].slice(2);
+			(options[name] ??= []).push(flags.has(name) ? 'true' : argv[++i] ?? '');
 		} else {
 			positional.push(argv[i]);
 		}
@@ -71,6 +91,7 @@ async function main(argv: string[]): Promise<number> {
 	const service = new ProoftreeService(findWorkspaceRoot(options.root?.[0] ?? process.cwd()));
 	const actor: Actor = options.agent ? { kind: 'agent', name: options.agent[0] } : localHuman(service.root);
 	const config = service.config();
+	const depth = Number(options.depth?.[0] ?? 1) as ReasoningDepth;
 
 	switch (command) {
 		case 'mcp':
@@ -79,26 +100,46 @@ async function main(argv: string[]): Promise<number> {
 		case 'status': {
 			const reports = service.evaluate();
 			const selected = args[0] ? [service.report(args[0], reports)] : [...reports.values()];
-			console.log(selected.length ? selected.map(report => describeReport(report, config)).join('\n\n') : 'No claims yet.');
+			console.log(selected.length ? selected.map(report => describeReport(report, config, depth)).join('\n\n') : 'No claims yet.');
 			return 0;
 		}
+		case 'outline':
+			console.log(describeOutline(service.evaluate(), depth));
+			return 0;
 		case 'obligations': {
 			const open = service.obligations();
 			console.log(describeObligations(open, config));
 			return open.length ? 1 : 0;
 		}
+		case 'graph': {
+			const graph = buildGraph(service.evaluate());
+			const focus = args[0] ? findNode(graph, args[0]) : undefined;
+			if (args[0] && !focus) {
+				console.error(`Nothing in the graph matches "${args[0]}".`);
+				return 1;
+			}
+			console.log(describeGraph(focus ? neighborhood(graph, focus.id, Number(options.radius?.[0] ?? 2)) : graph));
+			return 0;
+		}
 		case 'claim': {
-			const report = service.declareClaim({ statement: args.join(' '), anchors: (options.at ?? []).map(parseAt), dependsOn: options.dep }, actor);
-			console.log(describeReport(report, config));
+			const report = service.declareClaim({
+				statement: args.join(' '),
+				anchors: (options.at ?? []).map(parseAt),
+				dependsOn: options.dep,
+				parent: options.parent?.[0],
+				reasoning: options.why,
+				formal: parseFormal(options.formal?.[0]),
+			}, actor);
+			console.log(describeReport(report, config, 3));
 			return 0;
 		}
 		case 'check': {
-			const { run, report } = await service.runCheck(args[0], args[1], actor);
+			const { evidence, output, report } = await service.runCheck(args[0], args[1], actor);
 			console.log(describeReport(report, config));
-			if (run.result === 'fail') {
-				console.log('\n' + run.output);
+			if (evidence.result === 'fail') {
+				console.log('\n' + output);
 			}
-			return run.result === 'pass' ? 0 : 1;
+			return evidence.result === 'pass' ? 0 : 1;
 		}
 		case 'review': {
 			if (args[1] !== 'approve' && args[1] !== 'reject') {
@@ -107,6 +148,19 @@ async function main(argv: string[]): Promise<number> {
 			const report = service.review(args[0], args[1] === 'approve' ? 'approved' : 'rejected', args.slice(2).join(' ') || undefined, actor);
 			console.log(describeReport(report, config));
 			return 0;
+		}
+		case 'ci': {
+			const scope = options.scope?.[0] === 'agent' ? 'agent' : 'all';
+			const result = await runCi(service, { rerun: !!options.rerun, scope });
+			const summary = ciSummary(result);
+			console.log(summary);
+			if (process.env.GITHUB_ACTIONS) {
+				githubAnnotations(result, service).forEach(line => console.log(line));
+			}
+			if (process.env.GITHUB_STEP_SUMMARY) {
+				fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+			}
+			return result.ok ? 0 : 1;
 		}
 	}
 	console.error(USAGE);

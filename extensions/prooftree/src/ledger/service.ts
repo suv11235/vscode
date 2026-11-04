@@ -6,11 +6,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createAnchor } from './anchors';
-import { CheckRun, runCommand } from './checks';
+import { runCommand } from './checks';
+import { CheckConfig, parseConfig, ProoftreeConfig } from './config';
+import { hashCheckInputs } from './inputs';
+import { locateDeclaration, runLeanCheck } from './lean';
 import { CONFIG_FILE, LEDGER_DIR, LEDGER_FILE, LedgerState, newId, readLedger, serializeRecord } from './ledger';
-import { Actor, ClaimRecord, EvidenceRecord, LedgerRecord, RetractRecord, ReviewRecord } from './model';
-import { ClaimReport, dependentsOf, evaluateLedger, ReadFile } from './status';
-import { parseConfig, ProoftreeConfig } from './config';
+import { Actor, Anchor, ClaimRecord, EvidenceRecord, FormalLink, LedgerRecord, RetractRecord, ReviewRecord } from './model';
+import { ClaimReport, dependentsOf, descendantsOf, evaluateLedger, ReadFile } from './status';
 
 export interface AnchorInput {
 	readonly file: string;
@@ -20,9 +22,17 @@ export interface AnchorInput {
 
 export interface DeclareClaimInput {
 	readonly statement: string;
-	readonly anchors: readonly AnchorInput[];
+	/** Code the claim is about. A goal stated only through its steps may have none. */
+	readonly anchors?: readonly AnchorInput[];
 	readonly dependsOn?: readonly string[];
+	readonly parent?: string;
+	readonly reasoning?: readonly string[];
+	readonly formal?: FormalLink;
 	readonly session?: string;
+}
+
+export interface DecomposeInput extends DeclareClaimInput {
+	readonly steps: readonly DeclareClaimInput[];
 }
 
 export interface UpdateClaimInput {
@@ -31,17 +41,20 @@ export interface UpdateClaimInput {
 	/** Omitted anchors are re-taken over their current location. */
 	readonly anchors?: readonly AnchorInput[];
 	readonly dependsOn?: readonly string[];
+	readonly reasoning?: readonly string[];
+	readonly formal?: FormalLink;
 }
 
 export interface CheckOutcome {
 	readonly evidence: EvidenceRecord;
-	readonly run: CheckRun;
+	/** Output of the check, for showing on failure. */
+	readonly output: string;
 	readonly report: ClaimReport;
 }
 
 /**
  * All reads and writes of a workspace's ledger. The VS Code extension, the agent hook
- * command and the MCP server share this class, so they agree on every status.
+ * command, CI and the MCP server share this class, so they agree on every status.
  */
 export class ProoftreeService {
 
@@ -65,7 +78,17 @@ export class ProoftreeService {
 	}
 
 	evaluate(state = this.state()): Map<string, ClaimReport> {
-		return evaluateLedger(state, file => this.readFile(file), this.config().gate.accept);
+		const config = this.config();
+		const inputs = new Map<string, string>();
+		return evaluateLedger(state, file => this.readFile(file), {
+			accept: config.gate.accept,
+			checkInputs: check => {
+				if (!inputs.has(check)) {
+					inputs.set(check, this.checkInputs(config.checks[check]));
+				}
+				return inputs.get(check)!;
+			},
+		});
 	}
 
 	report(claimId: string, reports = this.evaluate()): ClaimReport {
@@ -91,22 +114,24 @@ export class ProoftreeService {
 	}
 
 	declareClaim(input: DeclareClaimInput, by: Actor): ClaimReport {
-		const state = this.state();
-		const statement = input.statement.trim();
-		if (!statement) {
-			throw new Error('A claim needs a statement of what is true.');
-		}
-		const dependsOn = this.validateDependencies(state, undefined, input.dependsOn ?? []);
-		const claim: ClaimRecord = {
-			v: 1, kind: 'claim', id: newId('c'), at: now(), by,
-			revision: 1,
-			statement,
-			anchors: this.anchor(input.anchors),
-			dependsOn,
-			...(input.session ? { session: input.session } : {}),
-		};
+		const claim = this.newClaim(this.state(), input, by);
 		this.append(claim);
 		return this.report(claim.id);
+	}
+
+	/** States a goal and its steps in one go, like a Prooftree statement and its outline. */
+	decompose(input: DecomposeInput, by: Actor): ClaimReport[] {
+		if (!input.steps.length) {
+			throw new Error('Give at least one step; otherwise declare a single claim.');
+		}
+		const state = this.state();
+		const goal = this.newClaim(state, input, by);
+		// Validate every step before writing anything, so a bad step leaves no half-stated goal.
+		const steps = input.steps.map(step => this.newClaim(state, { ...step, parent: undefined }, by));
+		this.append(goal);
+		steps.forEach(step => this.append({ ...step, parent: goal.id }));
+		const reports = this.evaluate();
+		return [goal, ...steps].map(claim => this.report(claim.id, reports));
 	}
 
 	updateClaim(input: UpdateClaimInput, by: Actor): ClaimReport {
@@ -116,20 +141,23 @@ export class ProoftreeService {
 			throw new Error(`No open claim ${input.claim}.`);
 		}
 		const current = this.report(input.claim, this.evaluate(state));
-		const anchors = input.anchors ?? current.anchors.map(anchor => {
+		const anchors = input.anchors ?? current.anchors.filter(anchor => anchor.anchor.role !== 'formal').map(anchor => {
 			if (anchor.kind === 'missing') {
 				throw new Error(`${anchor.anchor.file} no longer exists; pass new anchors for ${input.claim}.`);
 			}
 			return { file: anchor.anchor.file, startLine: anchor.startLine, endLine: anchor.endLine };
 		});
+		const formal = input.formal ?? previous.formal;
 		const claim: ClaimRecord = {
 			...previous,
 			at: now(),
 			by,
 			revision: previous.revision + 1,
 			statement: input.statement?.trim() || previous.statement,
-			anchors: this.anchor(anchors),
+			anchors: [...this.anchor(anchors), ...this.formalAnchor(formal)],
 			dependsOn: input.dependsOn ? this.validateDependencies(state, input.claim, input.dependsOn) : previous.dependsOn,
+			...(input.reasoning ? { reasoning: cleanReasoning(input.reasoning) } : {}),
+			...(formal ? { formal: this.normalizeFormal(formal) } : {}),
 		};
 		this.append(claim);
 		return this.report(claim.id);
@@ -146,24 +174,41 @@ export class ProoftreeService {
 
 	async runCheck(claimId: string, checkName: string, by: Actor): Promise<CheckOutcome> {
 		const config = this.config();
-		const command = config.checks[checkName];
-		if (!command) {
+		const check = config.checks[checkName];
+		if (!check) {
 			const names = Object.keys(config.checks);
 			throw new Error(names.length
 				? `Unknown check "${checkName}". Configured checks: ${names.join(', ')}.`
 				: `No checks are configured. A person must add them to ${LEDGER_DIR}/${CONFIG_FILE}.`);
 		}
-		// Bind the result to the code as it was when the check started.
+		// Bind the result to the code and the check as they were when the check started.
 		const before = this.report(claimId);
-		const run = await runCommand(command, this.root, config.checkTimeoutSeconds);
+		const inputs = this.checkInputs(check);
+		let result: 'pass' | 'fail';
+		let summary: string;
+		let output: string;
+		let command: string;
+		if (check.kind === 'lean') {
+			const formal = before.claim.formal;
+			if (!formal) {
+				throw new Error(`${claimId} has no Lean declaration. Link one with update claim (formal: file and declaration).`);
+			}
+			const lean = await runLeanCheck(this.root, formal, check, config.checkTimeoutSeconds);
+			({ result, summary, output, command } = lean);
+		} else {
+			const run = await runCommand(check.command!, this.root, config.checkTimeoutSeconds);
+			result = run.result;
+			output = run.output;
+			command = check.command!;
+			summary = run.timedOut ? `timed out after ${config.checkTimeoutSeconds}s` : `exit ${run.exitCode} in ${run.durationMs}ms`;
+		}
 		const evidence: EvidenceRecord = {
 			v: 1, kind: 'evidence', id: newId('e'), at: now(), by,
-			claim: claimId, method: 'check', check: checkName, command, result: run.result,
-			summary: run.timedOut ? `timed out after ${config.checkTimeoutSeconds}s` : `exit ${run.exitCode} in ${run.durationMs}ms`,
-			fingerprint: before.fingerprint,
+			claim: claimId, method: 'check', check: checkName, command, result, summary,
+			fingerprint: before.fingerprint, inputs,
 		};
 		this.append(evidence);
-		return { evidence, run, report: this.report(claimId) };
+		return { evidence, output, report: this.report(claimId) };
 	}
 
 	review(claimId: string, verdict: ReviewRecord['verdict'], note: string | undefined, by: Actor): ClaimReport {
@@ -185,13 +230,13 @@ export class ProoftreeService {
 	}
 
 	/** Claims the stop gate holds an agent to, in ledger order. */
-	obligations(reports = this.evaluate()): ClaimReport[] {
-		const { gate } = this.config();
+	obligations(reports = this.evaluate(), scope = this.config().gate.scope): ClaimReport[] {
+		const { accept } = this.config().gate;
 		return [...reports.values()].filter(report =>
-			(gate.scope === 'all' || report.claim.by.kind === 'agent') && !gate.accept.includes(report.status));
+			(scope === 'all' || report.claim.by.kind === 'agent') && !accept.includes(report.status));
 	}
 
-	/** Claims anchored in any of `files`, and every claim that depends on them. */
+	/** Claims anchored in any of `files`, and every claim whose status depends on them. */
 	claimsTouching(files: readonly string[], reports = this.evaluate()): ClaimReport[] {
 		const state = this.state();
 		const wanted = new Set(files.map(file => this.relativePath(file)));
@@ -205,10 +250,40 @@ export class ProoftreeService {
 		return [...ids].map(id => reports.get(id)).filter((report): report is ClaimReport => !!report);
 	}
 
-	private anchor(inputs: readonly AnchorInput[]) {
-		if (!inputs.length) {
-			throw new Error('A claim needs at least one anchor: the file, and optionally the lines, it is about.');
+	checkInputs(check: CheckConfig | undefined): string {
+		return hashCheckInputs(this.root, check, file => this.readFile(file));
+	}
+
+	private newClaim(state: LedgerState, input: DeclareClaimInput, by: Actor): ClaimRecord {
+		const statement = input.statement.trim();
+		if (!statement) {
+			throw new Error('A claim needs a statement of what is true.');
 		}
+		if (input.parent && (!state.claims.has(input.parent) || state.retracted.has(input.parent))) {
+			throw new Error(`Goal ${input.parent} is not an open claim.`);
+		}
+		// A goal depends on its steps, so a step cannot rely on its goal or anything above it.
+		for (let goal = input.parent; goal; goal = state.claims.get(goal)?.parent) {
+			if (input.dependsOn?.includes(goal)) {
+				throw new Error(`Depending on ${goal} would create a cycle: it is a goal above this step.`);
+			}
+		}
+		const id = newId('c');
+		const formal = input.formal ? this.normalizeFormal(input.formal) : undefined;
+		return {
+			v: 1, kind: 'claim', id, at: now(), by,
+			revision: 1,
+			statement,
+			anchors: [...this.anchor(input.anchors ?? []), ...this.formalAnchor(formal)],
+			dependsOn: this.validateDependencies(state, undefined, input.dependsOn ?? []),
+			...(input.parent ? { parent: input.parent } : {}),
+			...(input.reasoning?.length ? { reasoning: cleanReasoning(input.reasoning) } : {}),
+			...(formal ? { formal } : {}),
+			...(input.session ? { session: input.session } : {}),
+		};
+	}
+
+	private anchor(inputs: readonly AnchorInput[]): Anchor[] {
 		return inputs.map(input => {
 			const file = this.relativePath(input.file);
 			const content = this.readFile(file);
@@ -219,13 +294,35 @@ export class ProoftreeService {
 		});
 	}
 
+	private normalizeFormal(formal: FormalLink): FormalLink {
+		return { file: this.relativePath(formal.file), declaration: formal.declaration.trim() };
+	}
+
+	/** The anchor on a Lean declaration, found by name so it follows the declaration. */
+	private formalAnchor(formal: FormalLink | undefined): Anchor[] {
+		if (!formal) {
+			return [];
+		}
+		const { file, declaration } = this.normalizeFormal(formal);
+		const content = this.readFile(file);
+		if (content === undefined) {
+			throw new Error(`${file} does not exist.`);
+		}
+		const lines = locateDeclaration(content, declaration);
+		if (!lines) {
+			throw new Error(`No declaration named ${declaration} in ${file}.`);
+		}
+		return [{ ...createAnchor(file, content, lines.startLine, lines.endLine), role: 'formal' }];
+	}
+
 	private validateDependencies(state: LedgerState, claimId: string | undefined, dependsOn: readonly string[]): string[] {
 		const dependents = claimId ? dependentsOf(state, claimId) : new Set<string>();
+		const below = claimId ? descendantsOf(state, claimId) : new Set<string>();
 		for (const id of dependsOn) {
 			if (!state.claims.has(id) || state.retracted.has(id)) {
 				throw new Error(`Dependency ${id} is not an open claim.`);
 			}
-			if (id === claimId || dependents.has(id)) {
+			if (id === claimId || dependents.has(id) || below.has(id)) {
 				throw new Error(`Depending on ${id} would create a cycle.`);
 			}
 		}
@@ -252,6 +349,10 @@ export function findWorkspaceRoot(start: string): string {
 			return gitRoot ?? path.resolve(start);
 		}
 	}
+}
+
+function cleanReasoning(levels: readonly string[]): string[] {
+	return levels.map(level => level.trim()).filter(Boolean).slice(0, 3);
 }
 
 function readIfExists(file: string): string | undefined {

@@ -7,15 +7,27 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { localHuman } from './ledger/actor';
-import { DEFAULT_CONFIG } from './ledger/config';
+import { WORKFLOW_FILE, workflowTemplate } from './ledger/ci';
+import { describeCheck } from './ledger/config';
 import { STATUS_LABEL } from './ledger/format';
 import { Actor } from './ledger/model';
+import { AnchorInput } from './ledger/service';
 import { ClaimReport } from './ledger/status';
 import { registerAgentTools } from './workbench/agentTools';
 import { ClaimsNode, ClaimsView } from './workbench/claimsView';
-import { ClaimCodeLensProvider, ClaimDecorations } from './workbench/editor';
+import { ClaimCodeLensProvider, ClaimDecorations, ClaimHoverProvider } from './workbench/editor';
+import { GraphPanel } from './workbench/graphView';
 import { installAgentHooks } from './workbench/installAgentHooks';
 import { anchorRange, ProoftreeModel } from './workbench/model';
+
+const CONFIG_TEMPLATE = {
+	checks: {
+		test: { command: 'npm test', inputs: ['test/**', 'package.json'] },
+		lean: { kind: 'lean', inputs: ['lakefile.*', 'lean-toolchain'] },
+	},
+	checkTimeoutSeconds: 300,
+	gate: { onStop: true, scope: 'agent', accept: ['checked', 'reviewed', 'proved'] },
+};
 
 export function activate(context: vscode.ExtensionContext): void {
 	const folder = vscode.workspace.workspaceFolders?.[0];
@@ -63,6 +75,29 @@ export function activate(context: vscode.ExtensionContext): void {
 		return picked?.report;
 	};
 
+	/** The selected lines of the active editor, if it shows a workspace file. */
+	const selectionAnchor = async (): Promise<AnchorInput | undefined> => {
+		const editor = vscode.window.activeTextEditor;
+		if (!editor || !model.relativePath(editor.document.uri)) {
+			return undefined;
+		}
+		await editor.document.save();
+		const { start, end } = editor.selection;
+		const endLine = end.character === 0 && end.line > start.line ? end.line : end.line + 1;
+		return { file: editor.document.uri.fsPath, startLine: start.line + 1, endLine };
+	};
+
+	const pickPremises = async (): Promise<string[] | undefined> => {
+		if (!model.reports.size) {
+			return [];
+		}
+		const picked = await vscode.window.showQuickPick(
+			[...model.reports.values()].map(report => ({ label: report.claim.statement, description: report.claim.id, id: report.claim.id })),
+			{ canPickMany: true, title: 'Depends on (optional)', placeHolder: 'Claims this one relies on' },
+		);
+		return picked?.map(item => item.id);
+	};
+
 	const run = (action: () => unknown) => async () => {
 		try {
 			await action();
@@ -80,38 +115,56 @@ export function activate(context: vscode.ExtensionContext): void {
 		model, claimsView, treeView, statusBar,
 		new ClaimDecorations(model),
 		vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new ClaimCodeLensProvider(model)),
+		vscode.languages.registerHoverProvider({ scheme: 'file' }, new ClaimHoverProvider(model)),
 		registerAgentTools(model),
 		model.onDidChange(updateStatusBar),
 
 		command('prooftree.declareClaim', async () => {
-			const editor = vscode.window.activeTextEditor;
-			if (!editor || !model.relativePath(editor.document.uri)) {
+			const anchor = await selectionAnchor();
+			if (!anchor) {
 				throw new Error('Open a workspace file and select the lines the claim is about.');
 			}
-			await editor.document.save();
 			const statement = await vscode.window.showInputBox({
 				title: 'Declare claim',
 				prompt: 'What is true about the selected code?',
 				placeHolder: 'e.g. parseDate rejects months above 12',
 			});
+			const dependsOn = statement ? await pickPremises() : undefined;
+			if (!statement || !dependsOn) {
+				return;
+			}
+			const report = model.service.declareClaim({ statement, anchors: [anchor], dependsOn }, human());
+			vscode.window.showInformationMessage(`Declared ${report.claim.id}: ${STATUS_LABEL[report.status]}.`);
+		}),
+
+		command('prooftree.addStep', async (argument?: ClaimsNode | string) => {
+			const goal = await pickClaim(argument, 'Goal to add a step to');
+			if (!goal) {
+				return;
+			}
+			const anchor = await selectionAnchor();
+			const statement = await vscode.window.showInputBox({
+				title: `Add step ${goal.steps.length + 1} to ${goal.claim.id}`,
+				prompt: anchor ? 'What does this step establish about the selected code?' : 'What does this step establish? (No code is selected, so the step has no anchor.)',
+			});
 			if (!statement) {
 				return;
 			}
-			const dependencies = model.reports.size ? await vscode.window.showQuickPick(
-				[...model.reports.values()].map(report => ({ label: report.claim.statement, description: report.claim.id, id: report.claim.id })),
-				{ canPickMany: true, title: 'Depends on (optional)', placeHolder: 'Claims this one relies on' },
-			) : [];
-			if (dependencies === undefined) {
+			const report = model.service.declareClaim({ statement, anchors: anchor ? [anchor] : [], parent: goal.claim.id }, human());
+			vscode.window.showInformationMessage(`Added ${report.claim.id} as step ${goal.steps.length + 1} of ${goal.claim.id}.`);
+		}),
+
+		command('prooftree.linkLean', async (argument?: ClaimsNode | string) => {
+			const report = await pickClaim(argument, 'Claim to state in Lean');
+			if (!report) {
 				return;
 			}
-			const selection = editor.selection;
-			const endLine = selection.end.character === 0 && selection.end.line > selection.start.line ? selection.end.line : selection.end.line + 1;
-			const report = model.service.declareClaim({
-				statement,
-				anchors: [{ file: editor.document.uri.fsPath, startLine: selection.start.line + 1, endLine }],
-				dependsOn: dependencies.map(dependency => dependency.id),
-			}, human());
-			vscode.window.showInformationMessage(`Declared ${report.claim.id}: ${STATUS_LABEL[report.status]}.`);
+			const files = await vscode.workspace.findFiles('**/*.lean', '{**/.lake/**,**/node_modules/**}', 500);
+			const file = await vscode.window.showQuickPick(files.map(uri => ({ label: vscode.workspace.asRelativePath(uri), uri })), { placeHolder: 'Lean file with the theorem' });
+			const declaration = file && await vscode.window.showInputBox({ title: 'Lean declaration', prompt: `Theorem or lemma in ${file.label} that states "${report.claim.statement}"` });
+			if (file && declaration) {
+				model.service.updateClaim({ claim: report.claim.id, formal: { file: file.uri.fsPath, declaration } }, human());
+			}
 		}),
 
 		command('prooftree.runCheck', async (argument?: ClaimsNode | string) => {
@@ -119,26 +172,26 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!report) {
 				return;
 			}
-			const checks = Object.entries(model.config.checks);
+			const checks = Object.entries(model.config.checks).filter(([, check]) => check.kind !== 'lean' || report.claim.formal);
 			if (!checks.length) {
-				throw new Error('No checks configured. Add them to .prooftree/config.json (Prooftree: Open Config).');
+				throw new Error('No checks apply. Add them to .prooftree/config.json (Prooftree: Open Config); Lean checks need a linked Lean declaration.');
 			}
-			const check = checks.length === 1 ? checks[0][0] : (await vscode.window.showQuickPick(
-				checks.map(([name, commandLine]) => ({ label: name, description: commandLine })), { placeHolder: 'Check to run' }))?.label;
-			if (!check) {
+			const name = checks.length === 1 ? checks[0][0] : (await vscode.window.showQuickPick(
+				checks.map(([checkName, check]) => ({ label: checkName, description: describeCheck(check) })), { placeHolder: 'Check to run' }))?.label;
+			if (!name) {
 				return;
 			}
 			await vscode.workspace.saveAll(false);
 			const outcome = await vscode.window.withProgress(
-				{ location: vscode.ProgressLocation.Notification, title: `Prooftree: running ${check}` },
-				() => model.service.runCheck(report.claim.id, check, human()),
+				{ location: vscode.ProgressLocation.Notification, title: `Prooftree: running ${name}` },
+				() => model.service.runCheck(report.claim.id, name, human()),
 			);
-			if (outcome.run.result === 'pass') {
-				vscode.window.showInformationMessage(`Check "${check}" passed for ${report.claim.id}.`);
+			if (outcome.evidence.result === 'pass') {
+				vscode.window.showInformationMessage(`Check "${name}" passed for ${report.claim.id}: ${outcome.evidence.summary}.`);
 			} else {
 				const output = vscode.window.createOutputChannel('Prooftree');
-				output.appendLine(`[${check}] ${outcome.evidence.summary}\n${outcome.run.output}`);
-				const choice = await vscode.window.showWarningMessage(`Check "${check}" failed for ${report.claim.id}.`, 'Show Output');
+				output.appendLine(`[${name}] ${outcome.evidence.summary}\n${outcome.output}`);
+				const choice = await vscode.window.showWarningMessage(`Check "${name}" failed for ${report.claim.id}: ${outcome.evidence.summary}.`, 'Show Output');
 				if (choice) {
 					output.show();
 				}
@@ -181,20 +234,64 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		command('prooftree.revealClaim', async (claimId: string) => {
 			const report = model.reports.get(claimId);
-			if (!report) {
-				return;
-			}
-			const anchor = report.anchors.find(candidate => candidate.kind !== 'missing');
+			const anchor = report?.anchors.find(candidate => candidate.kind !== 'missing');
 			if (anchor) {
 				await vscode.window.showTextDocument(vscode.Uri.joinPath(folder.uri, anchor.anchor.file), { selection: anchorRange(anchor), preview: true });
+			}
+		}),
+
+		command('prooftree.showGraph', () => GraphPanel.show(model)),
+
+		command('prooftree.setReasoningDepth', async () => {
+			const options = [
+				{ label: '1', description: 'Summary', depth: 1 },
+				{ label: '2', description: 'Explanation', depth: 2 },
+				{ label: '3', description: 'Full detail', depth: 3 },
+			];
+			const picked = await vscode.window.showQuickPick(options.map(option => ({ ...option, picked: option.depth === model.depth })), {
+				title: 'Reasoning depth',
+				placeHolder: 'How much reasoning to show in the claims view and hovers. Deeper shows more explanation, not more certainty.',
+			});
+			if (picked) {
+				await vscode.workspace.getConfiguration('prooftree').update('reasoningDepth', picked.depth, vscode.ConfigurationTarget.Global);
+			}
+		}),
+
+		command('prooftree.addCiWorkflow', async () => {
+			const bundled = context.asAbsolutePath(path.join('dist', 'prooftree.cjs'));
+			if (!fs.existsSync(bundled)) {
+				throw new Error('The bundled CLI is missing. Run `npm run build-cli` in extensions/prooftree.');
+			}
+			const root = folder.uri.fsPath;
+			const workflow = path.join(root, WORKFLOW_FILE);
+			if (fs.existsSync(workflow)) {
+				const replace = await vscode.window.showWarningMessage(`${WORKFLOW_FILE} already exists.`, { modal: true }, 'Replace');
+				if (replace !== 'Replace') {
+					return;
+				}
+			}
+			const usesLean = Object.values(model.config.checks).some(check => check.kind === 'lean');
+			fs.mkdirSync(path.dirname(workflow), { recursive: true });
+			fs.writeFileSync(workflow, workflowTemplate(usesLean));
+			fs.mkdirSync(path.join(root, '.prooftree', 'bin'), { recursive: true });
+			fs.copyFileSync(bundled, path.join(root, '.prooftree', 'bin', 'prooftree.cjs'));
+			// Ledger lines are independent records, so concurrent branches merge by keeping both.
+			const attributes = path.join(root, '.gitattributes');
+			const line = '.prooftree/ledger.jsonl merge=union';
+			const existing = fs.existsSync(attributes) ? fs.readFileSync(attributes, 'utf8') : '';
+			if (!existing.includes(line)) {
+				fs.writeFileSync(attributes, existing + (existing && !existing.endsWith('\n') ? '\n' : '') + line + '\n');
+			}
+			const opened = await vscode.window.showInformationMessage(`Prooftree: wrote ${WORKFLOW_FILE}, .prooftree/bin/prooftree.cjs and a union merge rule for the ledger. Install your checks' dependencies in the workflow.`, 'Open Workflow');
+			if (opened) {
+				await vscode.window.showTextDocument(vscode.Uri.file(workflow));
 			}
 		}),
 
 		command('prooftree.openConfig', async () => {
 			if (!fs.existsSync(model.service.configPath)) {
 				fs.mkdirSync(path.dirname(model.service.configPath), { recursive: true });
-				const template = { ...DEFAULT_CONFIG, checks: { test: 'npm test' } };
-				fs.writeFileSync(model.service.configPath, JSON.stringify(template, undefined, '\t') + '\n');
+				fs.writeFileSync(model.service.configPath, JSON.stringify(CONFIG_TEMPLATE, undefined, '\t') + '\n');
 			}
 			await vscode.window.showTextDocument(vscode.Uri.file(model.service.configPath));
 		}),

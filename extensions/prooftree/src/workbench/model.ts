@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { AnchorState } from '../ledger/anchors';
 import { ProoftreeConfig } from '../ledger/config';
+import { ReasoningDepth } from '../ledger/format';
 import { LEDGER_DIR } from '../ledger/ledger';
 import { ProoftreeService } from '../ledger/service';
 import { ClaimReport } from '../ledger/status';
@@ -47,6 +48,11 @@ export class ProoftreeModel implements vscode.Disposable {
 			vscode.workspace.onDidCreateFiles(() => this.scheduleRefresh()),
 			vscode.workspace.onDidDeleteFiles(() => this.scheduleRefresh()),
 			vscode.workspace.onDidRenameFiles(() => this.scheduleRefresh()),
+			vscode.workspace.onDidChangeConfiguration(event => {
+				if (event.affectsConfiguration('prooftree.reasoningDepth')) {
+					this._onDidChange.fire();
+				}
+			}),
 			this._onDidChange,
 		);
 		this.refresh();
@@ -58,6 +64,12 @@ export class ProoftreeModel implements vscode.Disposable {
 
 	get config(): ProoftreeConfig {
 		return this._config;
+	}
+
+	/** How much reasoning people see by default: 1 summary, 2 explanation, 3 full detail. */
+	get depth(): ReasoningDepth {
+		const depth = vscode.workspace.getConfiguration('prooftree').get<number>('reasoningDepth', 1);
+		return depth === 2 || depth === 3 ? depth : 1;
 	}
 
 	/** Why the ledger or config could not be read, if it could not. */

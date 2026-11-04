@@ -4,10 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { STATUS_LABEL } from '../ledger/format';
+import { ReasoningDepth, STATUS_LABEL } from '../ledger/format';
 import { ClaimStatus } from '../ledger/status';
 import { anchorRange, ProoftreeModel } from './model';
-import { claimTooltip, STATUS_STYLE } from './presentation';
+import { claimMarkdown, STATUS_STYLE } from './presentation';
 
 const MAX_LENS_STATEMENT = 80;
 
@@ -27,8 +27,9 @@ export class ClaimCodeLensProvider implements vscode.CodeLensProvider {
 			const statement = report.claim.statement.length > MAX_LENS_STATEMENT
 				? report.claim.statement.slice(0, MAX_LENS_STATEMENT - 1) + '…'
 				: report.claim.statement;
+			const prefix = anchor.anchor.role === 'formal' ? 'Lean statement of ' : '';
 			lenses.push(new vscode.CodeLens(range, {
-				title: `$(${STATUS_STYLE[report.status].icon}) ${STATUS_LABEL[report.status]}: ${statement}`,
+				title: `$(${STATUS_STYLE[report.status].icon}) ${STATUS_LABEL[report.status]}: ${prefix}${statement}`,
 				tooltip: report.claim.id,
 				command: 'prooftree.revealClaim',
 				arguments: [report.claim.id],
@@ -47,7 +48,32 @@ export class ClaimCodeLensProvider implements vscode.CodeLensProvider {
 	}
 }
 
-/** Colored left border and overview ruler marks on anchored ranges, plus a hover. */
+/**
+ * The claims covering the hovered line. The hover's + and - buttons change the reasoning
+ * depth, as the reasoning depth slider does on a Prooftree statement page.
+ */
+export class ClaimHoverProvider implements vscode.HoverProvider {
+
+	private readonly _depths = new WeakMap<vscode.Hover, ReasoningDepth>();
+
+	constructor(private readonly model: ProoftreeModel) { }
+
+	provideHover(document: vscode.TextDocument, position: vscode.Position, _token: vscode.CancellationToken, context?: vscode.HoverContext): vscode.VerboseHover | undefined {
+		const hits = this.model.anchorsIn(document.uri).filter(({ anchor }) => anchor.startLine !== undefined && anchorRange(anchor).contains(position));
+		if (!hits.length) {
+			return undefined;
+		}
+		const previous = context?.previousHover && this._depths.get(context.previousHover);
+		const depth = Math.min(3, Math.max(1, (previous ?? this.model.depth) + (context?.verbosityDelta ?? 0))) as ReasoningDepth;
+		const contents = hits.map(({ report }) => claimMarkdown(report, this.model.config, depth, this.model.reports));
+		const range = hits.map(({ anchor }) => anchorRange(anchor)).reduce((a, b) => a.intersection(b) ?? a);
+		const hover = new vscode.VerboseHover(contents, range, depth < 3, depth > 1);
+		this._depths.set(hover, depth);
+		return hover;
+	}
+}
+
+/** Colored left border and overview ruler marks on anchored ranges. */
 export class ClaimDecorations implements vscode.Disposable {
 
 	private readonly _types = new Map<ClaimStatus, vscode.TextEditorDecorationType>();
@@ -79,14 +105,11 @@ export class ClaimDecorations implements vscode.Disposable {
 	}
 
 	private update(editor: vscode.TextEditor): void {
-		const byStatus = new Map<ClaimStatus, vscode.DecorationOptions[]>();
+		const byStatus = new Map<ClaimStatus, vscode.Range[]>();
 		for (const { report, anchor } of this.model.anchorsIn(editor.document.uri)) {
-			if (anchor.startLine === undefined) {
-				continue;
+			if (anchor.startLine !== undefined) {
+				byStatus.set(report.status, [...(byStatus.get(report.status) ?? []), anchorRange(anchor)]);
 			}
-			const options = byStatus.get(report.status) ?? [];
-			options.push({ range: anchorRange(anchor), hoverMessage: claimTooltip(report, this.model.config) });
-			byStatus.set(report.status, options);
 		}
 		for (const [status, type] of this._types) {
 			editor.setDecorations(type, byStatus.get(status) ?? []);

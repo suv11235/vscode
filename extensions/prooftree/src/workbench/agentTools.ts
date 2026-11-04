@@ -5,12 +5,11 @@
 
 import * as vscode from 'vscode';
 import { AGENT_TOOLS, AgentTool } from '../agent/tools';
+import { describeCheck } from '../ledger/config';
 import { Actor } from '../ledger/model';
 import { ProoftreeModel } from './model';
 
 const CHAT_AGENT: Actor = { kind: 'agent', name: 'vscode-chat' };
-
-const READ_ONLY_TOOLS = new Set(['prooftree_list_obligations', 'prooftree_status']);
 
 /** Registers {@link AGENT_TOOLS} as language model tools for chat agents. */
 export function registerAgentTools(model: ProoftreeModel): vscode.Disposable {
@@ -26,19 +25,19 @@ class LanguageModelTool implements vscode.LanguageModelTool<any> {
 			return {};
 		}
 		const { claim, check } = options.input as { claim: string; check: string };
-		const command = this.model.config.checks[check];
+		const configured = this.model.config.checks[check];
 		return {
 			invocationMessage: `Running Prooftree check "${check}" for ${claim}`,
-			confirmationMessages: command ? {
+			confirmationMessages: configured ? {
 				title: `Run check "${check}"?`,
-				message: new vscode.MarkdownString(`Runs \`${command}\` in the workspace and records the result for claim \`${claim}\`.`),
+				message: new vscode.MarkdownString(`Runs ${describeCheck(configured)} in the workspace and records the result for claim \`${claim}\`.`),
 			} : undefined,
 		};
 	}
 
 	async invoke(options: vscode.LanguageModelToolInvocationOptions<any>): Promise<vscode.LanguageModelToolResult> {
 		// The hook command and checks read files from disk, so agent edits must be saved first.
-		if (!READ_ONLY_TOOLS.has(this.tool.name)) {
+		if (!this.tool.readOnly) {
 			await vscode.workspace.saveAll(false);
 		}
 		let text: string;

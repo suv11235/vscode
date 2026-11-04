@@ -5,8 +5,34 @@
 	"properties": {
 		"checks": {
 			"type": "object",
-			"description": "Named shell commands run from the workspace root. Exit code 0 is a pass. Agents can only run checks listed here.",
-			"additionalProperties": { "type": "string" }
+			"description": "Named checks. Agents can only run checks listed here.",
+			"additionalProperties": {
+				"oneOf": [
+					{
+						"type": "string",
+						"description": "A shell command run from the workspace root. Exit code 0 is a pass."
+					},
+					{
+						"type": "object",
+						"properties": {
+							"kind": {
+								"enum": ["command", "lean"],
+								"default": "command",
+								"description": "\"command\" runs a shell command; \"lean\" compiles the claim's linked Lean declaration and fails if it uses sorry."
+							},
+							"command": {
+								"type": "string",
+								"description": "For \"command\": the shell command. For \"lean\": the Lean invocation, default `lake env lean` with a lakefile, otherwise `lean`."
+							},
+							"inputs": {
+								"type": "array",
+								"items": { "type": "string" },
+								"description": "Globs of files the check reads, such as tests and fixtures. Changing one makes earlier results of this check stale."
+							}
+						}
+					}
+				]
+			}
 		},
 		"checkTimeoutSeconds": {
 			"type": "number",
@@ -27,9 +53,9 @@
 				},
 				"accept": {
 					"type": "array",
-					"items": { "enum": ["checked", "reviewed", "asserted"] },
-					"default": ["checked", "reviewed"],
-					"description": "Statuses that discharge a claim."
+					"items": { "enum": ["checked", "reviewed", "proved", "asserted"] },
+					"default": ["checked", "reviewed", "proved"],
+					"description": "Statuses that discharge a claim. \"proved\" is a goal whose steps are all discharged."
 				}
 			}
 		}

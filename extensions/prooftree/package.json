@@ -45,7 +45,7 @@
     "viewsWelcome": [
       {
         "view": "prooftree.claims",
-        "contents": "Claims state what is true about the code, anchored to the lines that make it true. Evidence goes stale when those lines or a dependency change.\n[Declare Claim from Selection](command:prooftree.declareClaim)\n[Configure Checks](command:prooftree.openConfig)\n[Connect Agents](command:prooftree.installAgentHooks)",
+        "contents": "Claims state what is true about the code, anchored to the lines that make it true. Break a goal into steps; evidence goes stale when those lines, a premise or a check change.\n[Declare Claim from Selection](command:prooftree.declareClaim)\n[Configure Checks](command:prooftree.openConfig)\n[Connect Agents](command:prooftree.installAgentHooks)\n[Add CI Workflow](command:prooftree.addCiWorkflow)",
         "when": "!prooftree.hasClaims"
       }
     ],
@@ -114,6 +114,36 @@
         "title": "Refresh",
         "category": "Prooftree",
         "icon": "$(refresh)"
+      },
+      {
+        "category": "Prooftree",
+        "command": "prooftree.addStep",
+        "title": "Add Step to Goal",
+        "icon": "$(list-ordered)"
+      },
+      {
+        "category": "Prooftree",
+        "command": "prooftree.linkLean",
+        "title": "Link Lean Declaration",
+        "icon": "$(symbol-function)"
+      },
+      {
+        "category": "Prooftree",
+        "command": "prooftree.showGraph",
+        "title": "Show Knowledge Graph",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "category": "Prooftree",
+        "command": "prooftree.setReasoningDepth",
+        "title": "Set Reasoning Depth",
+        "icon": "$(list-tree)"
+      },
+      {
+        "category": "Prooftree",
+        "command": "prooftree.addCiWorkflow",
+        "title": "Add CI Workflow",
+        "icon": "$(github-action)"
       }
     ],
     "menus": {
@@ -148,6 +178,21 @@
           "command": "prooftree.installAgentHooks",
           "when": "view == prooftree.claims",
           "group": "1_config@3"
+        },
+        {
+          "command": "prooftree.showGraph",
+          "when": "view == prooftree.claims",
+          "group": "navigation@3"
+        },
+        {
+          "command": "prooftree.setReasoningDepth",
+          "when": "view == prooftree.claims",
+          "group": "navigation@4"
+        },
+        {
+          "command": "prooftree.addCiWorkflow",
+          "when": "view == prooftree.claims",
+          "group": "1_config@4"
         }
       ],
       "view/item/context": [
@@ -175,6 +220,16 @@
           "command": "prooftree.retract",
           "when": "view == prooftree.claims && viewItem == prooftree.claim",
           "group": "2_danger@1"
+        },
+        {
+          "command": "prooftree.addStep",
+          "when": "view == prooftree.claims && viewItem == prooftree.claim",
+          "group": "0_structure@1"
+        },
+        {
+          "command": "prooftree.linkLean",
+          "when": "view == prooftree.claims && viewItem == prooftree.claim",
+          "group": "0_structure@2"
         }
       ],
       "editor/context": [
@@ -199,7 +254,7 @@
         "icon": "$(shield)",
         "canBeReferencedInPrompt": true,
         "userDescription": "Declare Claim in the Prooftree ledger",
-        "modelDescription": "Declare a claim: one specific statement that is now true about the code (behavior, invariant or requirement), anchored to the lines that make it true. Returns the claim id and status. Declare a claim for each behavior you change, then discharge it with prooftree_run_check.",
+        "modelDescription": "Declare a claim: one specific statement that is now true about the code (behavior, invariant or requirement), anchored to the lines that make it true. Give `parent` to add it as a step of an existing goal. Returns the claim id and status. Then discharge it with prooftree_run_check.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -209,8 +264,7 @@
             },
             "anchors": {
               "type": "array",
-              "minItems": 1,
-              "description": "Where the claim is made true. Line numbers are 1-based and inclusive; omit them to anchor the whole file.",
+              "description": "Where the claim is made true. Line numbers are 1-based and inclusive; omit them to anchor the whole file. A goal stated only through its steps may omit anchors.",
               "items": {
                 "type": "object",
                 "properties": {
@@ -235,12 +289,190 @@
               "items": {
                 "type": "string"
               },
-              "description": "Ids of existing claims this claim relies on. Their changes make this claim's evidence stale."
+              "description": "Ids of existing claims this claim relies on (premises). Their changes make this claim's evidence stale."
+            },
+            "reasoning": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 3,
+              "description": "Why the claim holds, from shortest to most detailed: a one-line summary, then an explanation, then full detail. Readers choose how deep to read."
+            },
+            "formal": {
+              "type": "object",
+              "description": "A Lean declaration that states this claim formally, checked by a \"lean\" check. It fails if the proof uses sorry.",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "description": "Path of the .lean file."
+                },
+                "declaration": {
+                  "type": "string",
+                  "description": "Name of the theorem or lemma."
+                }
+              },
+              "required": [
+                "file",
+                "declaration"
+              ]
+            },
+            "parent": {
+              "type": "string",
+              "description": "Id of the goal this claim is a step of."
+            }
+          },
+          "required": [
+            "statement"
+          ]
+        }
+      },
+      {
+        "name": "prooftree_decompose",
+        "toolReferenceName": "decompose",
+        "displayName": "Decompose Goal",
+        "icon": "$(shield)",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Decompose Goal in the Prooftree ledger",
+        "modelDescription": "State a goal and break it into ordered steps in one call, like a proof outline. The goal is proved when every step is discharged; each step is a normal claim with its own anchors and checks. Use this to plan a change before making it.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "statement": {
+              "type": "string",
+              "description": "A checkable statement, e.g. \"parseDate rejects months above 12\"."
+            },
+            "anchors": {
+              "type": "array",
+              "description": "Where the claim is made true. Line numbers are 1-based and inclusive; omit them to anchor the whole file. A goal stated only through its steps may omit anchors.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "description": "Workspace-relative or absolute path."
+                  },
+                  "startLine": {
+                    "type": "number"
+                  },
+                  "endLine": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "file"
+                ]
+              }
+            },
+            "dependsOn": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Ids of existing claims this claim relies on (premises). Their changes make this claim's evidence stale."
+            },
+            "reasoning": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 3,
+              "description": "Why the claim holds, from shortest to most detailed: a one-line summary, then an explanation, then full detail. Readers choose how deep to read."
+            },
+            "formal": {
+              "type": "object",
+              "description": "A Lean declaration that states this claim formally, checked by a \"lean\" check. It fails if the proof uses sorry.",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "description": "Path of the .lean file."
+                },
+                "declaration": {
+                  "type": "string",
+                  "description": "Name of the theorem or lemma."
+                }
+              },
+              "required": [
+                "file",
+                "declaration"
+              ]
+            },
+            "steps": {
+              "type": "array",
+              "minItems": 1,
+              "description": "The steps, in order. Each is a claim.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "statement": {
+                    "type": "string",
+                    "description": "A checkable statement, e.g. \"parseDate rejects months above 12\"."
+                  },
+                  "anchors": {
+                    "type": "array",
+                    "description": "Where the claim is made true. Line numbers are 1-based and inclusive; omit them to anchor the whole file. A goal stated only through its steps may omit anchors.",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "file": {
+                          "type": "string",
+                          "description": "Workspace-relative or absolute path."
+                        },
+                        "startLine": {
+                          "type": "number"
+                        },
+                        "endLine": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "file"
+                      ]
+                    }
+                  },
+                  "dependsOn": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Ids of existing claims this claim relies on (premises). Their changes make this claim's evidence stale."
+                  },
+                  "reasoning": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 3,
+                    "description": "Why the claim holds, from shortest to most detailed: a one-line summary, then an explanation, then full detail. Readers choose how deep to read."
+                  },
+                  "formal": {
+                    "type": "object",
+                    "description": "A Lean declaration that states this claim formally, checked by a \"lean\" check. It fails if the proof uses sorry.",
+                    "properties": {
+                      "file": {
+                        "type": "string",
+                        "description": "Path of the .lean file."
+                      },
+                      "declaration": {
+                        "type": "string",
+                        "description": "Name of the theorem or lemma."
+                      }
+                    },
+                    "required": [
+                      "file",
+                      "declaration"
+                    ]
+                  }
+                },
+                "required": [
+                  "statement"
+                ]
+              }
             }
           },
           "required": [
             "statement",
-            "anchors"
+            "steps"
           ]
         }
       },
@@ -251,7 +483,7 @@
         "icon": "$(shield)",
         "canBeReferencedInPrompt": true,
         "userDescription": "Update Claim in the Prooftree ledger",
-        "modelDescription": "Write a new revision of a claim after its code changed or its statement needs correcting. Without anchors, re-anchors to the current text at the existing locations. Earlier evidence does not carry over; run a check afterwards.",
+        "modelDescription": "Write a new revision of a claim after its code changed or its statement, reasoning or Lean link needs correcting. Without anchors, re-anchors to the current text at the existing locations. Earlier evidence does not carry over; run a check afterwards.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -260,12 +492,12 @@
               "description": "Claim id."
             },
             "statement": {
-              "type": "string"
+              "type": "string",
+              "description": "A checkable statement, e.g. \"parseDate rejects months above 12\"."
             },
             "anchors": {
               "type": "array",
-              "minItems": 1,
-              "description": "Where the claim is made true. Line numbers are 1-based and inclusive; omit them to anchor the whole file.",
+              "description": "Where the claim is made true. Line numbers are 1-based and inclusive; omit them to anchor the whole file. A goal stated only through its steps may omit anchors.",
               "items": {
                 "type": "object",
                 "properties": {
@@ -290,7 +522,33 @@
               "items": {
                 "type": "string"
               },
-              "description": "Ids of existing claims this claim relies on. Their changes make this claim's evidence stale."
+              "description": "Ids of existing claims this claim relies on (premises). Their changes make this claim's evidence stale."
+            },
+            "reasoning": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 3,
+              "description": "Why the claim holds, from shortest to most detailed: a one-line summary, then an explanation, then full detail. Readers choose how deep to read."
+            },
+            "formal": {
+              "type": "object",
+              "description": "A Lean declaration that states this claim formally, checked by a \"lean\" check. It fails if the proof uses sorry.",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "description": "Path of the .lean file."
+                },
+                "declaration": {
+                  "type": "string",
+                  "description": "Name of the theorem or lemma."
+                }
+              },
+              "required": [
+                "file",
+                "declaration"
+              ]
             }
           },
           "required": [
@@ -305,7 +563,7 @@
         "icon": "$(shield)",
         "canBeReferencedInPrompt": true,
         "userDescription": "Run Check in the Prooftree ledger",
-        "modelDescription": "Run one of the workspace's configured checks (from .prooftree/config.json) and record the result as evidence for a claim, bound to the current code. Only a passing check discharges a claim.",
+        "modelDescription": "Run one of the workspace's configured checks (from .prooftree/config.json) and record the result as evidence for a claim, bound to the current code and the check's inputs. A \"lean\" check compiles the claim's Lean declaration. Only a passing check discharges a claim.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -370,22 +628,96 @@
         "icon": "$(shield)",
         "canBeReferencedInPrompt": true,
         "userDescription": "Claim Status in the Prooftree ledger",
-        "modelDescription": "Show every open claim, or one claim, with its anchors, dependencies, machine result and human review.",
+        "modelDescription": "Show every open claim, or one claim, with its reasoning, steps, anchors, premises, Lean link, machine result and human review.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "claim": {
               "type": "string",
               "description": "Optional claim id."
+            },
+            "depth": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 3,
+              "description": "Reasoning depth to show: 1 summary, 2 explanation, 3 full detail."
+            }
+          }
+        }
+      },
+      {
+        "name": "prooftree_outline",
+        "toolReferenceName": "outline",
+        "displayName": "Proof Outline",
+        "icon": "$(shield)",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Proof Outline in the Prooftree ledger",
+        "modelDescription": "Show goals and their numbered steps as an outline with statuses, with reasoning at the chosen depth.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "depth": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 3,
+              "description": "Reasoning depth to show: 1 summary, 2 explanation, 3 full detail."
+            }
+          }
+        }
+      },
+      {
+        "name": "prooftree_graph",
+        "toolReferenceName": "graph",
+        "displayName": "Knowledge Graph",
+        "icon": "$(shield)",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Knowledge Graph in the Prooftree ledger",
+        "modelDescription": "Query the knowledge graph of claims, steps, premises, files, Lean declarations and checks. Give `focus` (a claim id, file path, Lean declaration or check name) to see what is connected to it, for example which claims cover a file you are about to edit.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "focus": {
+              "type": "string",
+              "description": "Claim id, workspace-relative file path, Lean declaration or check name."
+            },
+            "radius": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 4,
+              "description": "How many edges away to include (default 2)."
             }
           }
         }
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Prooftree",
+      "properties": {
+        "prooftree.reasoningDepth": {
+          "type": "number",
+          "enum": [
+            1,
+            2,
+            3
+          ],
+          "default": 1,
+          "enumDescriptions": [
+            "Summary",
+            "Explanation",
+            "Full detail"
+          ],
+          "description": "How much of each claim's reasoning to show in the claims view and hovers. Deeper levels show more explanation, not more certainty. Hovers also have + and - buttons."
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "gulp compile-extension:prooftree",
     "watch": "gulp watch-extension:prooftree",
-    "test": "node --test \"out/test/**/*.test.js\""
-  }
+    "test": "node --test \"out/test/**/*.test.js\"",
+    "build-cli": "node build-cli.mjs"
+  },
+  "enabledApiProposals": [
+    "editorHoverVerbosityLevel"
+  ]
 }
