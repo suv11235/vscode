@@ -144,6 +144,12 @@
         "command": "prooftree.addCiWorkflow",
         "title": "Add CI Workflow",
         "icon": "$(github-action)"
+      },
+      {
+        "category": "Prooftree",
+        "command": "prooftree.reviewEdit",
+        "title": "Mark Agent Edit Reviewed",
+        "icon": "$(eye)"
       }
     ],
     "menus": {
@@ -151,6 +157,10 @@
         {
           "command": "prooftree.revealClaim",
           "when": "false"
+        },
+        {
+          "command": "prooftree.reviewEdit",
+          "when": "prooftree.enabled"
         }
       ],
       "view/title": [
@@ -230,6 +240,11 @@
           "command": "prooftree.linkLean",
           "when": "view == prooftree.claims && viewItem == prooftree.claim",
           "group": "0_structure@2"
+        },
+        {
+          "command": "prooftree.reviewEdit",
+          "when": "view == prooftree.claims && viewItem == prooftree.edit",
+          "group": "inline@1"
         }
       ],
       "editor/context": [
@@ -237,6 +252,11 @@
           "command": "prooftree.declareClaim",
           "when": "editorHasSelection && resourceScheme == file",
           "group": "prooftree@1"
+        },
+        {
+          "command": "prooftree.reviewEdit",
+          "when": "prooftree.enabled && resourceScheme == file",
+          "group": "prooftree@2"
         }
       ]
     },
@@ -709,7 +729,29 @@
           "description": "How much of each claim's reasoning to show in the claims view and hovers. Deeper levels show more explanation, not more certainty. Hovers also have + and - buttons."
         }
       }
-    }
+    },
+    "colors": [
+      {
+        "id": "prooftree.unreviewedEditBackground",
+        "description": "Background of agent-written lines a person kept without reviewing.",
+        "defaults": {
+          "dark": "#a371f714",
+          "light": "#8250df0f",
+          "highContrast": "#d2a8ff1f",
+          "highContrastLight": "#6639ba1a"
+        }
+      },
+      {
+        "id": "prooftree.unreviewedEditOverviewRuler",
+        "description": "Overview ruler mark and icon color for agent-written lines kept without review.",
+        "defaults": {
+          "dark": "#a371f7",
+          "light": "#8250df",
+          "highContrast": "#d2a8ff",
+          "highContrastLight": "#6639ba"
+        }
+      }
+    ]
   },
   "scripts": {
     "compile": "gulp compile-extension:prooftree",

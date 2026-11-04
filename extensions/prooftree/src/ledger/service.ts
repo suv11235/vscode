@@ -8,10 +8,11 @@ import * as path from 'path';
 import { createAnchor } from './anchors';
 import { runCommand } from './checks';
 import { CheckConfig, parseConfig, ProoftreeConfig } from './config';
+import { createEditSpan, EditReport, evaluateEdits } from './edits';
 import { hashCheckInputs } from './inputs';
 import { locateDeclaration, runLeanCheck } from './lean';
 import { CONFIG_FILE, LEDGER_DIR, LEDGER_FILE, LedgerState, newId, readLedger, serializeRecord } from './ledger';
-import { Actor, Anchor, ClaimRecord, EvidenceRecord, FormalLink, LedgerRecord, RetractRecord, ReviewRecord } from './model';
+import { Actor, Anchor, ClaimRecord, EditRecord, EditSpan, EvidenceRecord, FormalLink, LedgerRecord, RetractRecord, ReviewRecord } from './model';
 import { ClaimReport, dependentsOf, descendantsOf, evaluateLedger, ReadFile } from './status';
 
 export interface AnchorInput {
@@ -43,6 +44,21 @@ export interface UpdateClaimInput {
 	readonly dependsOn?: readonly string[];
 	readonly reasoning?: readonly string[];
 	readonly formal?: FormalLink;
+}
+
+export interface LineRange {
+	readonly startLine: number;
+	readonly endLine: number;
+}
+
+export interface KeptEditInput {
+	readonly file: string;
+	readonly ranges: readonly LineRange[];
+	readonly decision: EditRecord['decision'];
+	readonly agent?: string;
+	readonly model?: string;
+	readonly session?: string;
+	readonly request?: string;
 }
 
 export interface CheckOutcome {
@@ -212,9 +228,7 @@ export class ProoftreeService {
 	}
 
 	review(claimId: string, verdict: ReviewRecord['verdict'], note: string | undefined, by: Actor): ClaimReport {
-		if (by.kind !== 'human') {
-			throw new Error('Only a person can record a review.');
-		}
+		requireHuman(by, 'record a review');
 		const report = this.report(claimId);
 		this.append({
 			v: 1, kind: 'review', id: newId('r'), at: now(), by,
@@ -227,6 +241,57 @@ export class ProoftreeService {
 		this.report(claimId);
 		const record: RetractRecord = { v: 1, kind: 'retract', id: newId('x'), at: now(), by, claim: claimId, ...(reason ? { reason } : {}) };
 		this.append(record);
+	}
+
+	/** Agent-written lines people kept, where they are now. */
+	edits(state = this.state()): EditReport[] {
+		return evaluateEdits(state.edits, file => this.readFile(file));
+	}
+
+	/** Records agent-written lines a person kept, as accepted or as reviewed. */
+	recordKeptEdit(input: KeptEditInput, by: Actor): EditRecord {
+		requireHuman(by, 'keep or review an agent\'s edit');
+		const file = this.relativePath(input.file);
+		const content = this.readFile(file);
+		if (content === undefined) {
+			throw new Error(`${file} does not exist.`);
+		}
+		const record: EditRecord = {
+			v: 1, kind: 'edit', id: newId('k'), at: now(), by,
+			decision: input.decision,
+			spans: input.ranges.map(range => createEditSpan(file, content, range.startLine, range.endLine)),
+			...definedOnly({ agent: input.agent, model: input.model, session: input.session, request: input.request }),
+		};
+		this.append(record);
+		return record;
+	}
+
+	/**
+	 * Records that a person reviewed the kept agent lines in `file` that were not reviewed yet,
+	 * only within `lines` when given. Returns one review per keep it covers.
+	 */
+	reviewEdits(file: string, lines: LineRange | undefined, by: Actor): EditRecord[] {
+		requireHuman(by, 'review an agent\'s edit');
+		const relative = this.relativePath(file);
+		const content = this.readFile(relative);
+		if (content === undefined) {
+			throw new Error(`${relative} does not exist.`);
+		}
+		const byKeep = new Map<EditRecord, EditSpan[]>();
+		for (const report of this.edits()) {
+			const startLine = Math.max(report.startLine, lines?.startLine ?? report.startLine);
+			const endLine = Math.min(report.endLine, lines?.endLine ?? report.endLine);
+			if (report.file === relative && report.status === 'unreviewed' && startLine <= endLine) {
+				byKeep.set(report.kept, [...(byKeep.get(report.kept) ?? []), createEditSpan(relative, content, startLine, endLine)]);
+			}
+		}
+		const reviews = [...byKeep].map(([kept, spans]): EditRecord => ({
+			v: 1, kind: 'edit', id: newId('k'), at: now(), by,
+			decision: 'reviewed', spans, reviewOf: kept.id,
+			...definedOnly({ agent: kept.agent, model: kept.model, session: kept.session, request: kept.request }),
+		}));
+		reviews.forEach(review => this.append(review));
+		return reviews;
 	}
 
 	/** Claims the stop gate holds an agent to, in ledger order. */
@@ -349,6 +414,16 @@ export function findWorkspaceRoot(start: string): string {
 			return gitRoot ?? path.resolve(start);
 		}
 	}
+}
+
+function requireHuman(by: Actor, action: string): void {
+	if (by.kind !== 'human') {
+		throw new Error(`Only a person can ${action}.`);
+	}
+}
+
+function definedOnly<T extends object>(values: T): Partial<T> {
+	return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined)) as Partial<T>;
 }
 
 function cleanReasoning(levels: readonly string[]): string[] {

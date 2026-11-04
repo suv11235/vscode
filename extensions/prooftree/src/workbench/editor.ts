@@ -6,8 +6,8 @@
 import * as vscode from 'vscode';
 import { ReasoningDepth, STATUS_LABEL } from '../ledger/format';
 import { ClaimStatus } from '../ledger/status';
-import { anchorRange, ProoftreeModel } from './model';
-import { claimMarkdown, STATUS_STYLE } from './presentation';
+import { anchorRange, editRange, ProoftreeModel } from './model';
+import { claimMarkdown, editMarkdown, STATUS_STYLE } from './presentation';
 
 const MAX_LENS_STATEMENT = 80;
 
@@ -65,7 +65,7 @@ export class ClaimHoverProvider implements vscode.HoverProvider {
 		}
 		const previous = context?.previousHover && this._depths.get(context.previousHover);
 		const depth = Math.min(3, Math.max(1, (previous ?? this.model.depth) + (context?.verbosityDelta ?? 0))) as ReasoningDepth;
-		const contents = hits.map(({ report }) => claimMarkdown(report, this.model.config, depth, this.model.reports));
+		const contents = hits.map(({ report }) => claimMarkdown(report, this.model.config, depth, this.model.reports, this.model.unreviewedLinesIn(report)));
 		const range = hits.map(({ anchor }) => anchorRange(anchor)).reduce((a, b) => a.intersection(b) ?? a);
 		const hover = new vscode.VerboseHover(contents, range, depth < 3, depth > 1);
 		this._depths.set(hover, depth);
@@ -118,6 +118,52 @@ export class ClaimDecorations implements vscode.Disposable {
 
 	dispose(): void {
 		this._types.forEach(type => type.dispose());
+		this._disposables.forEach(disposable => disposable.dispose());
+	}
+}
+
+/** Who wrote and kept the hovered agent lines, while they are not reviewed. */
+export class EditHoverProvider implements vscode.HoverProvider {
+
+	constructor(private readonly model: ProoftreeModel) { }
+
+	provideHover(document: vscode.TextDocument, position: vscode.Position): vscode.Hover | undefined {
+		const edit = this.model.editsIn(document.uri).find(candidate => candidate.status === 'unreviewed' && editRange(candidate).contains(position));
+		return edit && new vscode.Hover(editMarkdown(edit), editRange(edit));
+	}
+}
+
+/**
+ * A tint and overview ruler mark on agent-written lines that a person kept without reviewing.
+ * Reviewed lines are left plain.
+ */
+export class EditDecorations implements vscode.Disposable {
+
+	private readonly _type = vscode.window.createTextEditorDecorationType({
+		isWholeLine: true,
+		backgroundColor: new vscode.ThemeColor('prooftree.unreviewedEditBackground'),
+		overviewRulerColor: new vscode.ThemeColor('prooftree.unreviewedEditOverviewRuler'),
+		overviewRulerLane: vscode.OverviewRulerLane.Right,
+	});
+	private readonly _disposables: vscode.Disposable[] = [];
+
+	constructor(private readonly model: ProoftreeModel) {
+		this._disposables.push(
+			model.onDidChange(() => this.updateAll()),
+			vscode.window.onDidChangeVisibleTextEditors(() => this.updateAll()),
+		);
+		this.updateAll();
+	}
+
+	private updateAll(): void {
+		for (const editor of vscode.window.visibleTextEditors) {
+			const ranges = this.model.editsIn(editor.document.uri).filter(edit => edit.status === 'unreviewed').map(editRange);
+			editor.setDecorations(this._type, ranges);
+		}
+	}
+
+	dispose(): void {
+		this._type.dispose();
 		this._disposables.forEach(disposable => disposable.dispose());
 	}
 }

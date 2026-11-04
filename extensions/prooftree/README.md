@@ -18,6 +18,10 @@ statement / step / review model.
   rejection. All three are bound to the claim's fingerprint: its statement, the current
   anchored text, and the fingerprints of its premises and steps. Checks also record a hash
   of their command and input files, so weakening a test makes old results stale.
+- **Keeping an agent's edit is not reviewing it.** When a person keeps chat edits, the
+  kept lines are recorded as *accepted*; **Keep as Reviewed** (or **Mark Agent Edit
+  Reviewed** later) records that they also read them. Each line is hashed, so a review
+  covers exactly the text that was read and lines that change afterwards drop out.
 - Everything is appended to `.prooftree/ledger.jsonl`; people configure checks and the
   stop gate in `.prooftree/config.json`.
 
@@ -31,7 +35,7 @@ claim.
 		"unit": { "command": "npm test", "inputs": ["test/**", "package.json"] },
 		"lean": { "kind": "lean", "inputs": ["lakefile.*", "lean-toolchain"] }
 	},
-	"gate": { "onStop": true, "scope": "agent", "accept": ["checked", "reviewed", "proved"] }
+	"gate": { "onStop": true, "scope": "agent", "accept": ["checked", "reviewed", "proved"], "unreviewedEdits": "warn" }
 }
 ```
 
@@ -39,18 +43,24 @@ claim.
 
 | Who | Where |
 | --- | --- |
-| People in VS Code | Claims view (goals with numbered steps), CodeLens and status borders on code and Lean files, hover with +/- reasoning depth, status bar, knowledge graph tab, commands to declare, add steps, link Lean, check, approve/reject, re-anchor and retract |
+| People in VS Code | Claims view (goals with numbered steps), CodeLens and status borders on code and Lean files, hover with +/- reasoning depth, status bar, knowledge graph tab, commands to declare, add steps, link Lean, check, approve/reject, re-anchor and retract. On agent edits: **Keep as Reviewed** next to Keep, a tint and hover on lines kept without review, and a "Kept without review" list |
 | VS Code chat agents | Language model tools `#declareClaim`, `#decompose`, `#updateClaim`, `#runCheck`, `#assert`, `#listObligations`, `#status`, `#outline`, `#graph` |
 | Claude Code and other MCP clients | `node out/cli/main.js mcp` exposes the same tools |
 | Any agent with hooks | `node out/cli/main.js hook`: `SessionStart` explains the contract, `PostToolUse` reports claims an edit affected (including goals above them), `Stop` blocks (exit 2) while the agent's claims are open |
-| CI | `node .prooftree/bin/prooftree.cjs ci --rerun` re-runs stale or failed checks, writes a job summary, annotates open claims on their lines, and fails the build. **Prooftree: Add CI Workflow** writes the GitHub workflow, the bundled CLI and a union merge rule for the ledger |
+| CI | `node .prooftree/bin/prooftree.cjs ci --rerun` re-runs stale or failed checks, writes a job summary, annotates open claims on their lines, and fails the build. Agent edits kept without review are annotated as warnings, or fail the build with `"unreviewedEdits": "block"`. **Prooftree: Add CI Workflow** writes the GitHub workflow, the bundled CLI and a union merge rule for the ledger |
+| Terminal | `prooftree edits` lists kept agent lines nobody reviewed; `prooftree review-edits <file[:start-end]>` records your review |
 
-Agents cannot review or retract, and can only run checks a person configured.
+Agents cannot review, keep edits or retract, and can only run checks a person configured.
 **Prooftree: Connect Agents** writes `.claude/settings.json` hooks (read by both Claude
 Code and VS Code), `.github/hooks/prooftree.json` (VS Code only) and `.mcp.json`.
 
 The hover's depth buttons use the proposed `editorHoverVerbosityLevel` API, which this
 built-in extension may use because it ships with the fork.
+
+Keep as Reviewed needs the workbench, because only it sees which hunk a person kept. The fork
+adds the kept line ranges to chat editing's hunk events and a small contribution in
+`src/vs/workbench/contrib/prooftree` that forwards each keep to `_prooftree.recordAgentEdit`
+and adds the Keep as Reviewed buttons when the workspace has a ledger (`prooftree.enabled`).
 
 ## Develop
 
@@ -70,6 +80,7 @@ API dependencies, so it can be rendered on its own.
 
 ## Not yet
 
-Separating "accepted" from "reviewed" in chat edit review, highlighting unverified
-agent-written code from edit provenance, Lean code-to-spec extraction, and Prooftree cloud
-sync. See the exploration doc in the prooftree docs repo.
+Highlighting agent-written code that no claim or evidence covers, from edit provenance
+(edits made by terminal agents such as Claude Code do not pass through Keep, so they are not
+recorded as kept), Lean code-to-spec extraction, and Prooftree cloud sync. See the
+exploration doc in the prooftree docs repo.

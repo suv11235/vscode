@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { AnchorState } from '../ledger/anchors';
 import { ProoftreeConfig } from '../ledger/config';
+import { EditReport } from '../ledger/edits';
 import { ReasoningDepth } from '../ledger/format';
 import { LEDGER_DIR } from '../ledger/ledger';
 import { ProoftreeService } from '../ledger/service';
@@ -18,6 +19,7 @@ export class ProoftreeModel implements vscode.Disposable {
 	readonly service: ProoftreeService;
 
 	private _reports = new Map<string, ClaimReport>();
+	private _edits: EditReport[] = [];
 	private _config: ProoftreeConfig;
 	private _error: string | undefined;
 	private _timer: ReturnType<typeof setTimeout> | undefined;
@@ -60,6 +62,37 @@ export class ProoftreeModel implements vscode.Disposable {
 
 	get reports(): ReadonlyMap<string, ClaimReport> {
 		return this._reports;
+	}
+
+	/** Agent-written lines people kept, reviewed or not. */
+	get edits(): readonly EditReport[] {
+		return this._edits;
+	}
+
+	get unreviewedEdits(): EditReport[] {
+		return this._edits.filter(edit => edit.status === 'unreviewed');
+	}
+
+	/** Kept agent lines in the given document. */
+	editsIn(uri: vscode.Uri): EditReport[] {
+		const file = this.relativePath(uri);
+		return this._edits.filter(edit => edit.file === file);
+	}
+
+	/** How many agent-written lines inside the claim's code were kept without review. */
+	unreviewedLinesIn(report: ClaimReport): number {
+		let count = 0;
+		for (const anchor of report.anchors) {
+			if (anchor.startLine === undefined || anchor.endLine === undefined || anchor.anchor.role === 'formal') {
+				continue;
+			}
+			for (const edit of this._edits) {
+				if (edit.status === 'unreviewed' && edit.file === anchor.anchor.file) {
+					count += Math.max(0, Math.min(edit.endLine, anchor.endLine) - Math.max(edit.startLine, anchor.startLine) + 1);
+				}
+			}
+		}
+		return count;
 	}
 
 	get config(): ProoftreeConfig {
@@ -110,7 +143,9 @@ export class ProoftreeModel implements vscode.Disposable {
 		clearTimeout(this._timer);
 		try {
 			this._config = this.service.config();
-			this._reports = this.service.evaluate();
+			const state = this.service.state();
+			this._reports = this.service.evaluate(state);
+			this._edits = this.service.edits(state);
 			this._error = undefined;
 		} catch (error) {
 			this._error = error instanceof Error ? error.message : String(error);
@@ -125,7 +160,8 @@ export class ProoftreeModel implements vscode.Disposable {
 
 	private isAnchored(uri: vscode.Uri): boolean {
 		const file = this.relativePath(uri);
-		return !!file && [...this._reports.values()].some(report => report.claim.anchors.some(anchor => anchor.file === file));
+		return !!file && ([...this._reports.values()].some(report => report.claim.anchors.some(anchor => anchor.file === file))
+			|| this._edits.some(edit => edit.file === file));
 	}
 
 	dispose(): void {
@@ -139,4 +175,8 @@ export function anchorRange(anchor: AnchorState): vscode.Range {
 		return new vscode.Range(0, 0, 0, 0);
 	}
 	return new vscode.Range(anchor.startLine - 1, 0, anchor.endLine - 1, Number.MAX_SAFE_INTEGER);
+}
+
+export function editRange(edit: EditReport): vscode.Range {
+	return new vscode.Range(edit.startLine - 1, 0, edit.endLine - 1, Number.MAX_SAFE_INTEGER);
 }

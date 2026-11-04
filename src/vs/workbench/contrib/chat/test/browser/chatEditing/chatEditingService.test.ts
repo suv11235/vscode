@@ -41,7 +41,7 @@ import { ChatSessionsService } from '../../../browser/chatSessions/chatSessions.
 import { ChatAgentService, IChatAgentData, IChatAgentImplementation, IChatAgentService } from '../../../common/participants/chatAgents.js';
 import { ChatEditingSessionState, emptySessionEntryDiff, getMultiDiffSourceUri, IChatEditReviewSession, IChatEditingService, IChatEditingSession, IEditSessionEntryDiff, IModifiedFileEntry, ModifiedFileEntryState } from '../../../common/editing/chatEditingService.js';
 import { ChatModel, IChatResponseModel } from '../../../common/model/chatModel.js';
-import { IChatService } from '../../../common/chatService/chatService.js';
+import { IChatEditingHunkAction, IChatService } from '../../../common/chatService/chatService.js';
 import { ChatService } from '../../../common/chatService/chatServiceImpl.js';
 import { ChatOpenDiagnosticsService, IChatOpenDiagnosticsService } from '../../../common/chatOpenDiagnosticsService.js';
 import { IChatSessionsService } from '../../../common/chatSessionsService.js';
@@ -59,6 +59,7 @@ import { MockPromptsService } from '../../common/promptSyntax/service/mockPrompt
 import { IChatDebugService } from '../../../common/chatDebugService.js';
 import { ChatDebugServiceImpl } from '../../../common/chatDebugServiceImpl.js';
 import { TestConfigurationService } from '../../../../../../platform/configuration/test/common/testConfigurationService.js';
+import { IAiEditTelemetryService } from '../../../../editTelemetry/browser/telemetry/aiEditTelemetry/aiEditTelemetryService.js';
 
 function getAgentData(id: string): IChatAgentData {
 	return {
@@ -102,6 +103,10 @@ suite('ChatEditingService', function () {
 		collection.set(ICustomizationMigrationService, new class extends mock<ICustomizationMigrationService>() { });
 		collection.set(ICustomizationMigrationTelemetryService, new class extends mock<ICustomizationMigrationTelemetryService>() { });
 		collection.set(ILanguageModelsService, new SyncDescriptor(NullLanguageModelsService));
+		collection.set(IAiEditTelemetryService, new class extends mock<IAiEditTelemetryService>() {
+			override handleCodeAccepted(): void { }
+			override handleCodeRejected(): void { }
+		});
 		const contextKeyService = store.add(new MockContextKeyService());
 		collection.set(IChatDebugService, store.add(new ChatDebugServiceImpl(new TestConfigurationService(), contextKeyService)));
 		collection.set(IMultiDiffSourceResolverService, new class extends mock<IMultiDiffSourceResolverService>() {
@@ -443,6 +448,30 @@ suite('ChatEditingService', function () {
 
 			assert.ok(modified.getValue().includes('FooBar'));
 			assert.ok(original.getValue().includes('FooBar'));
+		});
+	});
+
+	test('keeping edits reports the kept lines', async function () {
+		return runWithFakedTimers({}, async () => {
+			const uri = URI.from({ scheme: 'test', path: 'abc\n' });
+
+			const modelRef = store.add(chatService.startNewLocalSession(ChatAgentLocation.Chat));
+			const model = modelRef.object as ChatModel;
+			const session = model.editingSession;
+			assertType(session, 'session not created');
+
+			const entry = await idleAfterEdit(session, model, uri, [{ range: new Range(2, 1, 2, 1), text: 'FarBoo\nBar\n' }]);
+			await entry.getDiffInfo?.();
+
+			const actions: IChatEditingHunkAction[] = [];
+			store.add(chatService.onDidPerformUserAction(event => {
+				if (event.action.kind === 'chatEditingHunkAction') {
+					actions.push(event.action);
+				}
+			}));
+			await entry.accept();
+
+			assert.deepStrictEqual(actions.map(action => [action.outcome, action.modifiedLineRanges?.map(range => [range.startLineNumber, range.endLineNumberExclusive])]), [['accepted', [[2, 4]]]]);
 		});
 	});
 

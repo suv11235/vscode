@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { describeEdit, EditReport } from './edits';
 import { describeAnchor, nextStep, STATUS_LABEL } from './format';
 import { Actor } from './model';
 import { ProoftreeService } from './service';
@@ -27,6 +28,9 @@ export interface CiResult {
 	readonly reports: readonly ClaimReport[];
 	readonly open: readonly ClaimReport[];
 	readonly reran: readonly CiRun[];
+	/** Agent-written lines kept without review; empty when the gate allows them. */
+	readonly unreviewed: readonly EditReport[];
+	readonly unreviewedEdits: 'allow' | 'warn' | 'block';
 }
 
 const CI: Actor = { kind: 'ci', name: process.env.GITHUB_ACTIONS ? 'github-actions' : 'ci' };
@@ -48,7 +52,10 @@ export async function runCi(service: ProoftreeService, options: CiOptions): Prom
 	}
 	const reports = [...service.evaluate().values()];
 	const open = service.obligations(new Map(reports.map(report => [report.claim.id, report])), scope);
-	return { ok: open.length === 0, reports, open, reran };
+	const { unreviewedEdits } = service.config().gate;
+	const unreviewed = unreviewedEdits === 'allow' ? [] : service.edits().filter(edit => edit.status === 'unreviewed');
+	const ok = open.length === 0 && !(unreviewedEdits === 'block' && unreviewed.length);
+	return { ok, reports, open, reran, unreviewed, unreviewedEdits };
 }
 
 function escapeData(text: string): string {
@@ -59,10 +66,13 @@ function escapeProperty(text: string): string {
 	return escapeData(text).replace(/:/g, '%3A').replace(/,/g, '%2C');
 }
 
-/** GitHub Actions workflow commands that annotate each open claim on its code. */
+/** GitHub Actions workflow commands that annotate open claims and unreviewed agent edits on their code. */
 export function githubAnnotations(result: CiResult, service: ProoftreeService): string[] {
 	const config = service.config();
-	return result.open.flatMap(report => {
+	const level = result.unreviewedEdits === 'block' ? 'error' : 'warning';
+	const edits = result.unreviewed.map(edit =>
+		`::${level} file=${escapeProperty(edit.file)},line=${edit.startLine},endLine=${edit.endLine},title=${escapeProperty('Prooftree: agent edit kept without review')}::${escapeData(describeEdit(edit))}`);
+	return [...edits, ...result.open.flatMap(report => {
 		const title = escapeProperty(`Prooftree ${report.claim.id}: ${STATUS_LABEL[report.status]}`);
 		const message = escapeData(`${report.claim.statement}\nNext: ${nextStep(report, config)}`);
 		const located = report.anchors.filter(anchor => anchor.kind !== 'missing');
@@ -73,15 +83,20 @@ export function githubAnnotations(result: CiResult, service: ProoftreeService): 
 			const lines = anchor.startLine !== undefined ? `,line=${anchor.startLine},endLine=${anchor.endLine}` : '';
 			return `::error file=${escapeProperty(anchor.anchor.file)}${lines},title=${title}::${message}`;
 		});
-	});
+	})];
 }
 
 /** Markdown for the job summary. */
 export function ciSummary(result: CiResult): string {
 	const counts = new Map<ClaimStatus, number>();
 	result.reports.forEach(report => counts.set(report.status, (counts.get(report.status) ?? 0) + 1));
+	const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+	const problems = [
+		...(result.open.length ? [plural(result.open.length, 'open claim')] : []),
+		...(result.unreviewed.length ? [`${plural(result.unreviewed.length, 'agent edit')} kept without review`] : []),
+	];
 	const lines = [
-		`## Prooftree: ${result.ok ? 'all claims discharged' : `${result.open.length} open claim${result.open.length === 1 ? '' : 's'}`}`,
+		`## Prooftree: ${problems.join(', ') || 'all claims discharged'}`,
 		'',
 		[...counts].map(([status, count]) => `${count} ${STATUS_LABEL[status]}`).join(' · '),
 		'',
@@ -94,6 +109,14 @@ export function ciSummary(result: CiResult): string {
 		for (const report of result.open) {
 			const where = report.anchors.map(describeAnchor).join('<br>') || '—';
 			lines.push(`| \`${report.claim.id}\` | ${STATUS_LABEL[report.status]} | ${report.claim.statement.replace(/\|/g, '\\|')} | ${where} |`);
+		}
+	}
+	if (result.unreviewed.length) {
+		const effect = result.unreviewedEdits === 'block' ? 'They fail this build.' : 'They do not fail the build.';
+		lines.push('', `### Agent edits kept without review`, '', `A person kept these agent-written lines without recording a review. ${effect}`, '');
+		lines.push('| Where | Written by | Kept by |', '| --- | --- | --- |');
+		for (const edit of result.unreviewed) {
+			lines.push(`| ${edit.file}:${edit.startLine}-${edit.endLine} | ${edit.kept.model ?? edit.kept.agent ?? 'agent'} | ${edit.kept.by.name}, ${edit.kept.at.slice(0, 10)} |`);
 		}
 	}
 	return lines.join('\n') + '\n';

@@ -56,6 +56,11 @@
 					"items": { "enum": ["checked", "reviewed", "proved", "asserted"] },
 					"default": ["checked", "reviewed", "proved"],
 					"description": "Statuses that discharge a claim. \"proved\" is a goal whose steps are all discharged."
+				},
+				"unreviewedEdits": {
+					"enum": ["allow", "warn", "block"],
+					"default": "warn",
+					"description": "What `prooftree ci` does about agent-written lines a person kept without reviewing: ignore them, annotate them as warnings, or fail the build."
 				}
 			}
 		}

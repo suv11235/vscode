@@ -216,6 +216,7 @@ export const copyrightFilter = Object.freeze<string[]>([
 	'!extensions/markdown-language-features/media/highlight.css',
 	'!extensions/markdown-math/notebook-out/**',
 	'!extensions/prooftree/**',
+	'!src/vs/workbench/contrib/prooftree/**',
 	'!extensions/ipynb/notebook-out/**',
 	'!extensions/simple-browser/media/codicon.css',
 	'!extensions/terminal-suggest/src/completions/upstream/**',

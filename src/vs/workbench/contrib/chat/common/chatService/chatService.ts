@@ -1834,6 +1834,8 @@ export interface IChatEditingHunkAction {
 	modeId?: string;
 	modelId?: string;
 	languageId?: string;
+	/** For accepted hunks: the lines of the modified file they cover, as they are after the edit. */
+	modifiedLineRanges?: readonly { readonly startLineNumber: number; readonly endLineNumberExclusive: number }[];
 }
 
 export type ChatUserAction = IChatVoteAction | IChatCopyAction | IChatInsertAction | IChatApplyAction | IChatTerminalAction | IChatCommandAction | IChatFollowupAction | IChatBugReportAction | IChatInlineChatCodeAction | IChatEditingSessionAction | IChatEditingHunkAction;

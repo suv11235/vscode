@@ -8,6 +8,7 @@ import { handleHook } from '../agent/hook';
 import { serveMcp } from '../agent/mcp';
 import { localHuman } from '../ledger/actor';
 import { ciSummary, githubAnnotations, runCi } from '../ledger/ci';
+import { describeEdit } from '../ledger/edits';
 import { describeObligations, describeOutline, describeReport, ReasoningDepth } from '../ledger/format';
 import { buildGraph, describeGraph, findNode, neighborhood } from '../ledger/graph';
 import { Actor, FormalLink } from '../ledger/model';
@@ -26,6 +27,8 @@ const USAGE = [
 	'        [--why <reasoning>]... [--formal <file.lean#declaration>]',
 	'  check <claim> <check>               run a configured check for a claim',
 	'  review <claim> approve|reject [note]',
+	'  edits [--all]                       show agent-written lines people kept without review',
+	'  review-edits <file[:start[-end]]>   record that you reviewed the kept agent lines there',
 	'  ci [--rerun] [--scope all|agent]    fail when claims are open; annotate them on GitHub',
 	'',
 	'Options: --root <dir> (default: nearest folder with .prooftree or .git), --agent <name> (act as an agent)',
@@ -64,7 +67,7 @@ function readStdin(): Promise<string> {
 async function main(argv: string[]): Promise<number> {
 	const positional: string[] = [];
 	const options: Record<string, string[]> = {};
-	const flags = new Set(['rerun']);
+	const flags = new Set(['rerun', 'all']);
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i].startsWith('--')) {
 			const name = argv[i].slice(2);
@@ -147,6 +150,22 @@ async function main(argv: string[]): Promise<number> {
 			}
 			const report = service.review(args[0], args[1] === 'approve' ? 'approved' : 'rejected', args.slice(2).join(' ') || undefined, actor);
 			console.log(describeReport(report, config));
+			return 0;
+		}
+		case 'edits': {
+			const edits = service.edits().filter(edit => options.all || edit.status === 'unreviewed');
+			console.log(edits.length ? edits.map(describeEdit).join('\n') : options.all ? 'No kept agent edits.' : 'Every kept agent edit has been reviewed.');
+			return 0;
+		}
+		case 'review-edits': {
+			if (!args[0]) {
+				break;
+			}
+			const at = parseAt(args[0]);
+			const lines = at.startLine !== undefined ? { startLine: at.startLine, endLine: at.endLine ?? at.startLine } : undefined;
+			const reviews = service.reviewEdits(at.file, lines, actor);
+			const count = reviews.reduce((sum, review) => sum + review.spans.reduce((lineCount, span) => lineCount + span.endLine - span.startLine + 1, 0), 0);
+			console.log(count ? `Recorded your review of ${count} kept agent line${count === 1 ? '' : 's'} in ${at.file}.` : `No unreviewed kept agent lines in ${args[0]}.`);
 			return 0;
 		}
 		case 'ci': {

@@ -37,7 +37,7 @@ import { IDocumentDiff2 } from './chatEditingCodeEditorIntegration.js';
 import { pendingRewriteMinimap } from './chatEditingModifiedFileEntry.js';
 import { chatSessionResourceToId } from '../../common/model/chatUri.js';
 
-type affectedLines = { linesAdded: number; linesRemoved: number; lineCount: number; hasRemainingEdits: boolean };
+type affectedLines = { linesAdded: number; linesRemoved: number; lineCount: number; hasRemainingEdits: boolean; modifiedLineRanges?: readonly LineRange[] };
 type acceptedOrRejectedLines = affectedLines & { state: 'accepted' | 'rejected' };
 
 export class ChatEditingTextModelChangeService extends Disposable {
@@ -319,7 +319,8 @@ export class ChatEditingTextModelChangeService extends Disposable {
 	 * Keeps the current modified document as the final contents.
 	 */
 	public keep() {
-		this.notifyHunkAction('accepted', { linesAdded: this.linesAdded, linesRemoved: this.linesRemoved, lineCount: this.lineChangeCount, hasRemainingEdits: false });
+		const modifiedLineRanges = this._diffInfo.get().changes.map(change => change.modified);
+		this.notifyHunkAction('accepted', { linesAdded: this.linesAdded, linesRemoved: this.linesRemoved, lineCount: this.lineChangeCount, hasRemainingEdits: false, modifiedLineRanges });
 		this.originalModel.setValue(this.modifiedModel.createSnapshot());
 		this._reset();
 	}
@@ -421,7 +422,7 @@ export class ChatEditingTextModelChangeService extends Disposable {
 			edits.push(EditOperation.replace(edit.originalRange, newText));
 		}
 		this.originalModel.pushEditOperations(null, edits, _ => null);
-		await this._updateDiffInfoSeq('accepted');
+		await this._updateDiffInfoSeq('accepted', [change.modified]);
 		if (this._diffInfo.get().identical) {
 			this._didAcceptOrRejectAllHunks.fire(ModifiedFileEntryState.Accepted);
 		}
@@ -457,7 +458,7 @@ export class ChatEditingTextModelChangeService extends Disposable {
 	}
 
 
-	private async _updateDiffInfoSeq(notifyAction: 'accepted' | 'rejected' | undefined = undefined) {
+	private async _updateDiffInfoSeq(notifyAction: 'accepted' | 'rejected' | undefined = undefined, modifiedLineRanges?: readonly LineRange[]) {
 		const myDiffOperationId = ++this._diffOperationIds;
 		await Promise.resolve(this._diffOperation);
 		const previousCount = this.lineChangeCount;
@@ -472,7 +473,8 @@ export class ChatEditingTextModelChangeService extends Disposable {
 					linesAdded: previousAdded - this.linesAdded,
 					linesRemoved: previousRemoved - this.linesRemoved,
 					lineCount: previousCount - this.lineChangeCount,
-					hasRemainingEdits: this.lineChangeCount > 0
+					hasRemainingEdits: this.lineChangeCount > 0,
+					modifiedLineRanges
 				};
 				this.notifyHunkAction(notifyAction, affectedLines);
 			}

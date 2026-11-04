@@ -89,4 +89,35 @@ export interface RetractRecord extends RecordBase {
 	readonly reason?: string;
 }
 
-export type LedgerRecord = ClaimRecord | EvidenceRecord | ReviewRecord | RetractRecord;
+/**
+ * Lines of a file as an edit left them. Each line is hashed on its own (first 16 hex digits
+ * of its SHA-256), so lines that survive later edits around or inside the span can still be
+ * found.
+ */
+export interface EditSpan {
+	readonly file: string;
+	readonly startLine: number;
+	readonly endLine: number;
+	readonly lines: readonly string[];
+}
+
+/**
+ * Agent-written lines a person kept. Keeping an edit and reviewing it are different acts:
+ * `accepted` records that the person kept the lines, `reviewed` that they also read them.
+ * Either way the record covers the exact text kept, so a review never extends to lines that
+ * changed after it.
+ */
+export interface EditRecord extends RecordBase {
+	readonly kind: 'edit';
+	readonly decision: 'accepted' | 'reviewed';
+	readonly spans: readonly EditSpan[];
+	/** For a review of lines kept earlier: the record that kept them. */
+	readonly reviewOf?: string;
+	/** The chat agent, model, session and request that wrote the lines, when known. */
+	readonly agent?: string;
+	readonly model?: string;
+	readonly session?: string;
+	readonly request?: string;
+}
+
+export type LedgerRecord = ClaimRecord | EvidenceRecord | ReviewRecord | RetractRecord | EditRecord;

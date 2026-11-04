@@ -10,7 +10,7 @@ export function sha256(text: string): string {
 	return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
-function splitLines(content: string): string[] {
+export function splitLines(content: string): string[] {
 	return content.replace(/\r\n?/g, '\n').split('\n');
 }
 

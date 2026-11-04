@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { randomBytes } from 'crypto';
-import { ClaimRecord, EvidenceRecord, LedgerRecord, RetractRecord, ReviewRecord } from './model';
+import { ClaimRecord, EditRecord, EvidenceRecord, LedgerRecord, RetractRecord, ReviewRecord } from './model';
 
 export const LEDGER_DIR = '.prooftree';
 export const LEDGER_FILE = 'ledger.jsonl';
@@ -16,11 +16,13 @@ export interface LedgerState {
 	readonly evidence: Map<string, EvidenceRecord[]>;
 	readonly reviews: Map<string, ReviewRecord[]>;
 	readonly retracted: Map<string, RetractRecord>;
+	/** Kept agent edits and their reviews, in ledger order. */
+	readonly edits: EditRecord[];
 	/** Lines that could not be read, with their 1-based line numbers. */
 	readonly errors: readonly string[];
 }
 
-export function newId(prefix: 'c' | 'e' | 'r' | 'x'): string {
+export function newId(prefix: 'c' | 'e' | 'r' | 'x' | 'k'): string {
 	return `${prefix}_${randomBytes(4).toString('hex')}`;
 }
 
@@ -42,7 +44,7 @@ function push<T>(map: Map<string, T[]>, key: string, value: T): void {
 }
 
 export function readLedger(text: string): LedgerState {
-	const state: LedgerState = { claims: new Map(), evidence: new Map(), reviews: new Map(), retracted: new Map(), errors: [] };
+	const state: LedgerState = { claims: new Map(), evidence: new Map(), reviews: new Map(), retracted: new Map(), edits: [], errors: [] };
 	const errors = state.errors as string[];
 
 	text.split('\n').forEach((line, index) => {
@@ -76,6 +78,9 @@ export function readLedger(text: string): LedgerState {
 				break;
 			case 'retract':
 				state.retracted.set(record.claim, record);
+				break;
+			case 'edit':
+				state.edits.push(record);
 				break;
 			default:
 				errors.push(`line ${index + 1}: unknown kind`);
