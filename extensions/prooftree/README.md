@@ -80,6 +80,8 @@ npm run build-cli                  # dist/prooftree.cjs, the single-file CLI tha
 
 Run the whole IDE with `./scripts/code.sh <folder>` from the repository root.
 
+The [Lean-in-the-loop development plan](docs/lean-in-loop-development-plan.md) describes the proposed work-spec model, native IDE surfaces, Lean execution service, agent workflows, milestones, and acceptance criteria. It distinguishes the existing implementation from planned capabilities.
+
 The `languageModelTools` entries in package.json mirror `src/agent/tools.ts`; a test fails
 if they drift. The graph webview's page lives in `src/workbench/graphPage.ts` without VS Code
 API dependencies, so it can be rendered on its own.
