@@ -24,6 +24,11 @@
 								"type": "string",
 								"description": "For \"command\": the shell command. For \"lean\": the Lean invocation, default `lake env lean` with a lakefile, otherwise `lean`."
 							},
+							"permittedAxioms": {
+								"type": "array",
+								"items": { "type": "string" },
+								"description": "Lean dependency allowlist. An empty list requires no axioms; omitted preserves the existing policy of rejecting sorryAx only. Changing this policy makes previous evidence stale."
+							},
 							"inputs": {
 								"type": "array",
 								"items": { "type": "string" },

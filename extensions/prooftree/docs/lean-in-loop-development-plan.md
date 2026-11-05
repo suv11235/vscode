@@ -269,3 +269,7 @@ The examples below inspire verification patterns and product experiences. Their 
 - [One Token Wedge](https://github.com/iamjustoutthere/sglang-one-token): a scoped arithmetic proof and an explicit distinction between model evidence and production correspondence.
 - [zrdt](https://github.com/l-adic/zrdt): verification integrated into an existing application through a checked core and explicit boundaries.
 - [Choreo](https://github.com/prrpavani/choreo-helper): visual edits, geometric checks, and user-visible failure diagnosis.
+
+## Implementation feedback: diagnostic logging feature
+
+The first concrete SDD exercise is [DefyGravity diagnostics](https://github.com/johspaeth/DefyGravity/pull/76). [Field notes](diagnostics-sdd-field-notes.md) connect real requirements, code, four Lean contracts, integration/browser results and open review gates. This branch now implements explicit dependency allowlists, policy-sensitive evidence fingerprints, declaration-specific dependency parsing and rejection of failed compiler processes. These are incremental runner improvements, not completion of M0–M6. The exercise confirms the need for independent statement comparison, visible trusted definitions and evidence roles that cannot be mistaken for whole-feature assurance.
