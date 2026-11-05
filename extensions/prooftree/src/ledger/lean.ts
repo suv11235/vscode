@@ -69,7 +69,8 @@ export interface LeanResult {
 
 /**
  * Compiles the declaration's file with `#print axioms` appended. It passes only when Lean
- * reports no errors and the declaration's axioms do not include `sorryAx`.
+ * exits successfully and reports no errors; `sorryAx` is always rejected.
+ * When configured, every reported dependency must be in `permittedAxioms`.
  */
 export async function runLeanCheck(root: string, formal: FormalLink, check: CheckConfig, timeoutSeconds: number): Promise<LeanResult> {
 	const source = path.join(root, formal.file);
@@ -81,16 +82,22 @@ export async function runLeanCheck(root: string, formal: FormalLink, check: Chec
 		const run = await runCommand(command, root, timeoutSeconds);
 		const output = run.output.split(path.basename(probe)).join(path.basename(source));
 		const errors = output.split('\n').filter(line => /(^|:\d+:\d+: )error\b/.test(line));
-		const axioms = /depends on axioms: \[([^\]]*)\]/.exec(output);
-		const noAxioms = /does not depend on any axioms/.test(output);
+		const axioms = new RegExp(`'${escape(formal.declaration)}' depends on axioms: \\[([^\\]]*)\\]`).exec(output);
+		const dependencies = axioms?.[1].split(',').map(name => name.trim()).filter(Boolean) ?? [];
+		const rejected = dependencies.filter(name => check.permittedAxioms !== undefined && !check.permittedAxioms.includes(name));
+		const noAxioms = new RegExp(`'${escape(formal.declaration)}' does not depend on any axioms`).test(output);
 		let result: LeanResult['result'] = 'fail';
 		let summary: string;
 		if (run.timedOut) {
 			summary = `Lean timed out after ${timeoutSeconds}s`;
 		} else if (errors.length) {
 			summary = `Lean error: ${errors[0].replace(/^.*?error:\s*/, '').slice(0, 160)}`;
-		} else if (axioms?.[1].includes('sorryAx')) {
+		} else if (run.exitCode !== 0) {
+			summary = `Lean exited with code ${run.exitCode ?? 'unknown'}`;
+		} else if (dependencies.includes('sorryAx')) {
 			summary = `${formal.declaration} uses sorry`;
+		} else if (rejected.length) {
+			summary = `${formal.declaration} depends on unpermitted axioms: ${rejected.join(', ')}`;
 		} else if (axioms || noAxioms) {
 			result = 'pass';
 			summary = `${formal.declaration} proved` + (axioms ? ` (axioms: ${axioms[1].trim()})` : ' (no axioms)');

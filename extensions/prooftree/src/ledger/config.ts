@@ -13,6 +13,8 @@ import type { ClaimStatus } from './status';
  */
 export interface CheckConfig {
 	readonly kind: 'command' | 'lean';
+	/** Lean checks reject dependencies outside this list when specified. */
+	readonly permittedAxioms?: readonly string[];
 	readonly command?: string;
 	readonly inputs: readonly string[];
 }
@@ -46,7 +48,7 @@ export const DEFAULT_CONFIG: ProoftreeConfig = {
 	gate: { onStop: true, scope: 'agent', accept: ['checked', 'reviewed', 'proved'], unverifiedAgentCode: 'warn' },
 };
 
-type RawCheck = string | { kind?: 'command' | 'lean'; command?: string; inputs?: string[] };
+type RawCheck = string | { kind?: 'command' | 'lean'; command?: string; inputs?: string[]; permittedAxioms?: string[] };
 
 function parseCheck(name: string, raw: RawCheck): CheckConfig {
 	if (typeof raw === 'string') {
@@ -56,7 +58,10 @@ function parseCheck(name: string, raw: RawCheck): CheckConfig {
 	if (kind === 'command' && !raw.command) {
 		throw new Error(`Check "${name}" needs a command.`);
 	}
-	return { kind, command: raw.command, inputs: raw.inputs ?? [] };
+	if (raw.permittedAxioms !== undefined && (!Array.isArray(raw.permittedAxioms) || raw.permittedAxioms.some(value => typeof value !== 'string'))) {
+		throw new Error(`Check "${name}" permittedAxioms must be an array of names.`);
+	}
+	return { kind, command: raw.command, inputs: raw.inputs ?? [], ...(raw.permittedAxioms !== undefined ? { permittedAxioms: raw.permittedAxioms } : {}) };
 }
 
 export function parseConfig(text: string | undefined): ProoftreeConfig {
@@ -73,6 +78,7 @@ export function parseConfig(text: string | undefined): ProoftreeConfig {
 
 /** How a check is shown to people and agents. */
 export function describeCheck(check: CheckConfig): string {
-	const what = check.kind === 'lean' ? `Lean${check.command ? ` (${check.command})` : ''}` : check.command!;
+	const policy = check.permittedAxioms === undefined ? '' : ` · axioms: ${check.permittedAxioms.length ? check.permittedAxioms.join(', ') : 'none'}`;
+	const what = check.kind === 'lean' ? `Lean${check.command ? ` (${check.command})` : ''}${policy}` : check.command!;
 	return check.inputs.length ? `${what} · inputs ${check.inputs.join(', ')}` : what;
 }

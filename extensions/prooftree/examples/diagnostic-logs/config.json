@@ -1,0 +1,54 @@
+{
+  "checks": {
+    "diagnostic-proof": {
+      "kind": "lean",
+      "permittedAxioms": [
+        "propext",
+        "Quot.sound",
+        "Classical.choice"
+      ],
+      "inputs": [
+        "web/KaplaWeb/Diagnostics*.lean",
+        "specs/KaplaSpecs/Diagnostics.lean",
+        "comparator/diagnostics.json",
+        "lean-toolchain",
+        "lakefile.toml",
+        "lake-manifest.json"
+      ]
+    },
+    "diagnostic-http": {
+      "command": "lake build kapla && python3 scripts/test_diagnostics.py",
+      "inputs": [
+        "app/Main.lean",
+        "web/**/*.lean",
+        "scripts/test_diagnostics.py",
+        "gallery/*.json",
+        "lean-toolchain",
+        "lakefile.toml",
+        "lake-manifest.json"
+      ]
+    },
+    "diagnostic-comparator": {
+      "command": "lake comparator --config comparator/diagnostics.json",
+      "inputs": [
+        "web/KaplaWeb/Diagnostics*.lean",
+        "specs/KaplaSpecs/Diagnostics.lean",
+        "comparator/diagnostics.json",
+        "lean-toolchain",
+        "lakefile.toml",
+        "lake-manifest.json"
+      ]
+    }
+  },
+  "checkTimeoutSeconds": 300,
+  "gate": {
+    "onStop": true,
+    "scope": "all",
+    "accept": [
+      "checked",
+      "reviewed",
+      "proved"
+    ],
+    "unverifiedAgentCode": "warn"
+  }
+}

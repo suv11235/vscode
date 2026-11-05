@@ -72,5 +72,5 @@ export function hashCheckInputs(root: string, check: CheckConfig | undefined, re
 		return 'missing';
 	}
 	const files = listInputs(root, check.inputs).map(file => [file, sha256(readFile(file) ?? '')]);
-	return sha256(JSON.stringify({ kind: check.kind, command: check.command ?? '', files }));
+	return sha256(JSON.stringify({ kind: check.kind, command: check.command ?? '', ...(check.permittedAxioms !== undefined ? { permittedAxioms: check.permittedAxioms } : {}), files }));
 }

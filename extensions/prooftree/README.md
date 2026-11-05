@@ -80,6 +80,8 @@ npm run build-cli                  # dist/prooftree.cjs, the single-file CLI tha
 
 Run the whole IDE with `./scripts/code.sh <folder>` from the repository root.
 
+The [Lean-in-the-loop development plan](docs/lean-in-loop-development-plan.md) describes the proposed work-spec model, native IDE surfaces, Lean execution service, agent workflows, milestones, and acceptance criteria. It distinguishes the existing implementation from planned capabilities.
+
 The `languageModelTools` entries in package.json mirror `src/agent/tools.ts`; a test fails
 if they drift. The graph webview's page lives in `src/workbench/graphPage.ts` without VS Code
 API dependencies, so it can be rendered on its own.
@@ -89,3 +91,9 @@ API dependencies, so it can be rendered on its own.
 Recording files an agent changes through a shell command rather than an edit tool (such as
 `sed -i`), inline completions, Lean code-to-spec extraction, and Prooftree cloud sync. See the
 exploration doc in the prooftree docs repo.
+
+### Worked SDD feature: troubleshooting diagnostics
+
+The [diagnostic logging field notes](docs/diagnostics-sdd-field-notes.md) walk through an implemented feature with requirements, production-linked Lean contracts, HTTP/browser evidence, stale-result handling and open human review obligations. The [example config](examples/diagnostic-logs/config.json) separates declaration checks, integration checks and Linux statement comparison.
+
+Lean checks can set `permittedAxioms` to an explicit dependency allowlist, such as `["propext", "Quot.sound", "Classical.choice"]`. `[]` requires no dependencies; omitting the field retains the previous policy. Placeholder dependencies are always rejected. Changing the list makes prior evidence stale. A check requires a successful compiler exit and dependency output naming the linked declaration; proof text alone cannot override process failure.
